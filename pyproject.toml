@@ -1,0 +1,102 @@
+[project]
+name = "listenflow"
+dynamic = ["version"]
+description = "Engine-neutral streaming speech-to-text contracts and runtime"
+readme = "README.md"
+authors = [
+    { name = "minamik", email = "mia@sync.dev" },
+]
+license = "MIT"
+requires-python = ">=3.12,<3.14"
+keywords = ["stt", "speech-to-text", "speech-recognition"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/sync-dev-org/listenflow"
+Documentation = "https://sync-dev-org.github.io/listenflow/"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
+    "noren==0.2.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+root = "."
+relative_to = "pyproject.toml"
+tag_regex = "^v(?P<version>[^/]+)$"
+git_describe_command = [
+    "git",
+    "describe",
+    "--dirty",
+    "--tags",
+    "--long",
+    "--match",
+    "v*",
+]
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/listenflow/_version.py"
+
+[tool.hatch.build]
+dev-mode-dirs = ["src"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/listenflow"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["src/listenflow", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "-m",
+    "not performance",
+]
+markers = [
+    "cpu: qualified CPU payload and model tests",
+    "gpu: requires a real GPU and explicitly provisioned runtime assets",
+    "performance: opt-in performance measurement excluded from the default test run",
+    "req(id): parent requirement ID for an externally visible behavior test",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+exclude = [
+    ".git",
+    ".nf",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "*.egg-info",
+    "build",
+    "build-*",
+    "datasets",
+    "dist",
+    "**/_version.py",
+]
