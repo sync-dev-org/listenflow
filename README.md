@@ -33,7 +33,7 @@ from collections.abc import AsyncIterator
 from listenflow import Final, STTEngineBase
 
 
-async def transcribe(engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) -> None:
+async def recognize_stream(engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) -> None:
     async with engine:
         async for event in engine.stream(pcm_chunks):
             if isinstance(event, Final):
@@ -43,11 +43,33 @@ async def transcribe(engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) ->
     print(snapshot.processed_pcm_chunks, snapshot.emitted_events)
 ```
 
-Pass an engine instance and an audio source to `transcribe`. The core installation supplies the
+Pass an engine instance and an audio source to `recognize_stream`. The core installation supplies the
 contract; the engine supplies recognition. For the shared PCM helpers, select
 `EngineInputFormat.PCM_S16LE` for signed 16-bit little-endian samples or `EngineInputFormat.PCM_F32`
 for little-endian float32 samples. Both use 16 kHz mono audio, and each chunk must contain whole
 samples. Match the audio representation to the engine's declared input format.
+
+### Complete PCM input
+
+For audio already held as `bytes`, use `transcribe(engine, pcm)` to collect the engine's `Final`
+events in a `list[Final]`, in utterance order:
+
+```python
+from listenflow import Final, STTEngineBase, transcribe
+
+
+async def recognize_pcm(engine: STTEngineBase, pcm: bytes) -> list[Final]:
+    async with engine:
+        return await transcribe(engine, pcm)
+```
+
+The caller prepares and closes the engine; `transcribe()` only consumes its `stream()`.
+Supply complete PCM matching the engine's input format. The function preserves each final event's
+utterance ID, timestamp, text, and speaker label, excludes other event types, and returns `[]`
+when no final text is emitted. Stream errors propagate unchanged. The application reads audio
+files and converts formats before calling the function.
+
+See the [complete PCM transcription API](https://sync-dev-org.github.io/listenflow/api/transcription/).
 
 ### Synchronous callers
 
@@ -88,6 +110,8 @@ background operation and waits for its cleanup before propagating the interrupti
 happens when the loop stops early or its body raises an exception.
 
 See the [synchronous helper API](https://sync-dev-org.github.io/listenflow/api/sync/).
+For complete PCM input, use `run_sync(transcribe(engine, pcm))` between
+`run_sync(engine.prepare())` and `run_sync(engine.aclose())` on the same background event loop.
 
 ## Transcript events
 
@@ -165,7 +189,7 @@ All engine errors inherit from `STTError` and also support the corresponding sta
 | `EnvironmentUnavailableError` | `RuntimeError` | Missing native components, libraries, or devices. |
 | `ModuleNotInstalledError` | `ImportError` | Attribute access to a missing module listed in the core's module table; includes installation guidance. |
 
-The core's module table contains only engine modules published on PyPI and is currently empty.
+The core's module table contains only engine modules published on PyPI.
 Import an installed module outside that table explicitly with `import listenflow.<name>`.
 Before that import, accessing an unlisted module as `listenflow.<name>` raises `AttributeError`.
 If the module is missing, the explicit import raises Python's standard `ModuleNotFoundError`,
@@ -237,7 +261,8 @@ models.
 ## Documentation
 
 The [documentation guide](https://sync-dev-org.github.io/listenflow/) links to the API reference for
-engines, synchronous helpers, transcript events, utterance boundaries, and offline models.
+engines, complete PCM transcription, synchronous helpers, transcript events, utterance boundaries,
+and offline models.
 
 ## Development
 

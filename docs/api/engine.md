@@ -17,6 +17,9 @@ Close a stream explicitly with its `aclose()` or `contextlib.aclosing` when stop
 Consumer cancellation remains `asyncio.CancelledError`; engine closure produces `EngineClosedError`.
 Capabilities and health can be read while model operations run and after closure.
 
+To collect final transcripts from complete PCM audio, use the core function
+[`transcribe(engine, pcm)`](transcription.md). The caller prepares and closes the engine.
+
 Subclass constructors call `super().__init__()`. `_load()` and `_release()` are asynchronous;
 `_recognize()` returns an asynchronous iterator. A failed load cleans up its own partial resources.
 Hooks map native errors into the error hierarchy and chain their causes. Cancelled hooks wait for

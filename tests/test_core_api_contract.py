@@ -171,6 +171,8 @@ def test_package_root_does_not_publish_language_constants_or_validators() -> Non
         "iterate_sync",
         "run_sync",
         "sync",
+        "transcribe",
+        "transcription",
     }
     public_names = set(listenflow.__all__) | {
         name for name in vars(listenflow) if not name.startswith("_")

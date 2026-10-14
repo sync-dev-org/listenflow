@@ -32,6 +32,7 @@ nav:
   - Home: index.md
   - API reference:
       - Engines and health: api/engine.md
+      - Complete PCM transcription: api/transcription.md
       - Synchronous helpers: api/sync.md
       - Transcript events: api/events.md
       - Utterance boundaries: api/utterances.md

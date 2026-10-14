@@ -387,6 +387,32 @@ assert input_format is listenflow.EngineInputFormat.PCM_S16LE
 
 
 @pytest.mark.req("SP-LF-016")
+def test_core_only_wheel_guides_installation_of_fastest_whisper(
+    core_python: Path, tmp_path: Path
+) -> None:
+    """core だけを導入した利用側は、公開済みの未導入 engine module の導入先と入れ方を案内される。"""
+    code = """
+import listenflow
+
+try:
+    listenflow.fastest_whisper
+except listenflow.ModuleNotInstalledError as exc:
+    assert isinstance(exc, listenflow.STTError)
+    assert isinstance(exc, ImportError)
+    assert isinstance(exc.__cause__, ModuleNotFoundError)
+    assert exc.__cause__.name == "listenflow.fastest_whisper"
+    guidance = dict(part.split("=", 1) for part in str(exc).split("; "))
+    for field in ("why", "what"):
+        assert "listenflow-fastest-whisper" in guidance[field]
+        assert "listenflow.fastest_whisper" in guidance[field]
+    assert guidance["how"] == "pip install listenflow-fastest-whisper"
+else:
+    raise AssertionError("missing published engine module unexpectedly imported")
+"""
+    _run(str(core_python), "-I", "-c", code, cwd=tmp_path)
+
+
+@pytest.mark.req("SP-LF-016")
 def test_registered_module_distinguishes_missing_module_and_runtime_dependency(
     core_python: Path, tmp_path: Path
 ) -> None:

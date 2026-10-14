@@ -28,6 +28,7 @@ from listenflow.base import STTEngineBase
 from listenflow.events import Final, Partial, TranscriptEvent, UtteranceEnd, UtteranceStart
 from listenflow.health import BiasApplicationSnapshot, EngineState, HealthSnapshot
 from listenflow.sync import iterate_async, iterate_sync, run_sync
+from listenflow.transcription import transcribe
 from listenflow.errors import (
     ConfigurationError,
     EngineClosedError,
@@ -74,10 +75,13 @@ __all__ = [
     "iterate_async",
     "iterate_sync",
     "run_sync",
+    "transcribe",
 ]
 
 # Add engine modules here when they are published on PyPI.
-_MODULE_DISTRIBUTIONS: dict[str, str] = {}
+_MODULE_DISTRIBUTIONS: dict[str, str] = {
+    "fastest_whisper": "listenflow-fastest-whisper",
+}
 
 
 def __getattr__(name: str) -> object:

@@ -22,6 +22,11 @@ is cancelled and its cleanup finishes before the interruption propagates. Closin
 around that iterator when stopping early, and call `run_sync(engine.aclose())` in a `finally`
 block to release the engine's resources.
 
+For complete PCM input, use `run_sync(transcribe(engine, pcm))` after
+`run_sync(engine.prepare())` and close the engine with `run_sync(engine.aclose())` in `finally`.
+The result is a `list[Final]` preserving the engine's final events in utterance order. See the
+[complete PCM transcription API](transcription.md) for a full example.
+
 ::: listenflow.sync
     options:
       members: [run_sync, iterate_sync, iterate_async]

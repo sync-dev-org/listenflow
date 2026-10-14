@@ -195,7 +195,7 @@ dev = [
 dev = [
     { name = "mkdocs-material", specifier = ">=9.7.7" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
-    { name = "noren", specifier = "==0.2.0" },
+    { name = "noren", specifier = "==0.3.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "ruff", specifier = ">=0.8" },
@@ -383,14 +383,14 @@ wheels = [
 
 [[package]]
 name = "noren"
-version = "0.2.0"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2d/03/93f9e0ac3923af6adb6163ae5dd324fd418812a5b426c77e4876aa336978/noren-0.2.0.tar.gz", hash = "sha256:dd1b7c696d284eb29e020786d21087e63f584a7bd6b51a0f52dd5041a0f37624", size = 36465, upload-time = "2026-10-12T18:46:34.727Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/0f/8598649a3d026faacab844b77355eb399b7650033246fe39b0cff64db23e/noren-0.3.0.tar.gz", hash = "sha256:0945f6b64843ec78812f1125c6bd3286bfd57496b2fe138a425d3a7747dcf271", size = 40520, upload-time = "2026-10-12T23:52:15.895Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/f0/026f8dde7e0f60eb87fef0f07aa24653b71589a40063eb99efc9d6d40fdf/noren-0.2.0-py3-none-any.whl", hash = "sha256:99e078c95fb6dca7011027c6a5c11ad8f1bb6c6490ca7e894ecb53a81a7b3862", size = 16159, upload-time = "2026-10-12T18:46:33.347Z" },
+    { url = "https://files.pythonhosted.org/packages/7c/58/56402a5952294e86567de7ef91d23e8d43df6127be7b313af29d2ae0d372/noren-0.3.0-py3-none-any.whl", hash = "sha256:3cbfd17c005235382cf2e2284013649212463b5e3e0af87c1a9feed68886b978", size = 17548, upload-time = "2026-10-12T23:52:14.314Z" },
 ]
 
 [[package]]

@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator
 from listenflow import Final, STTEngineBase
 
 
-async def transcribe(engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) -> None:
+async def recognize_stream(engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) -> None:
     async with engine:
         async for event in engine.stream(pcm_chunks):
             if isinstance(event, Final):
@@ -43,6 +43,25 @@ The application supplies both arguments: an engine instance and an asynchronous 
 chunks. Match the chunks to `engine.capabilities.input_format`. The shared PCM helpers accept
 `EngineInputFormat.PCM_S16LE` (signed 16-bit little-endian) and `EngineInputFormat.PCM_F32`
 (little-endian float32). Both represent 16 kHz mono audio; every chunk must contain whole samples.
+
+### Complete PCM input
+
+Use `transcribe(engine, pcm)` when the complete PCM audio is already held as `bytes`:
+
+```python
+from listenflow import Final, STTEngineBase, transcribe
+
+
+async def recognize_pcm(engine: STTEngineBase, pcm: bytes) -> list[Final]:
+    async with engine:
+        return await transcribe(engine, pcm)
+```
+
+The function consumes `engine.stream()` and returns only its `Final` events in utterance order,
+preserving their IDs, timestamps, text, and speaker labels. It returns `[]` when no final text is
+emitted and propagates stream errors unchanged. The caller prepares and closes the engine and
+supplies PCM matching its input format. Audio file reading and format conversion belong to the
+application. See the [complete PCM transcription API](api/transcription.md).
 
 ### Synchronous callers
 
@@ -58,6 +77,8 @@ is interrupted while waiting, `run_sync()` and `iterate_sync()` cancel the backg
 and wait for cleanup before propagating the interruption. Use `contextlib.closing` around the
 synchronous iterator to wait for cleanup when stopping early, and `try`/`finally` to close the
 engine. See the [synchronous helper API](api/sync.md).
+For complete PCM input, call `run_sync(transcribe(engine, pcm))` after preparation and before
+closure on that same background event loop.
 
 ## Transcript events
 
@@ -112,8 +133,7 @@ Consumer cancellation stays `asyncio.CancelledError`; engine closure cancels ope
 `EnvironmentUnavailableError` (`RuntimeError`), and `ModuleNotInstalledError` (`ImportError`).
 Environment problems are reported during preparation. `ModuleNotInstalledError` provides installation
 guidance and chains the original import error when accessing a missing module listed in the core's
-module table as `listenflow.<name>`. The table contains only engine modules published on PyPI and is
-currently empty.
+module table as `listenflow.<name>`. The table contains only engine modules published on PyPI.
 
 Import an installed module outside that table explicitly with `import listenflow.<name>`.
 Before that import, accessing an unlisted module as `listenflow.<name>` raises `AttributeError`.
@@ -217,6 +237,7 @@ application provisions the files; the core does not download models. See the
 ## API reference
 
 - [Engines, capabilities, and health](api/engine.md)
+- [Complete PCM transcription](api/transcription.md)
 - [Synchronous helpers](api/sync.md)
 - [Transcript events](api/events.md)
 - [Utterance boundaries and decoding](api/utterances.md)
