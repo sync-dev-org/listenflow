@@ -2,28 +2,32 @@ from __future__ import annotations
 
 import email
 import tarfile
+import unicodedata
 import zipfile
 from pathlib import Path, PurePosixPath
 
 import pytest
-from noren.git import Entry
-from noren.publishing import match_lists
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _sdist_paths(sdist: Path) -> set[str]:
+def _sdist_files(sdist: Path) -> dict[str, bytes]:
     with tarfile.open(sdist) as archive:
-        members = [PurePosixPath(member.name) for member in archive.getmembers() if member.isfile()]
-    assert len({member.parts[0] for member in members}) == 1
-    return {str(PurePosixPath(*member.parts[1:])) for member in members}
+        members = [member for member in archive.getmembers() if member.isfile()]
+        assert len({PurePosixPath(member.name).parts[0] for member in members}) == 1
+        return {
+            str(PurePosixPath(*PurePosixPath(member.name).parts[1:])): archive.extractfile(
+                member
+            ).read()
+            for member in members
+        }
 
 
 @pytest.mark.req("SP-LF-037")
 def test_sdist_contains_only_core_sources_and_build_inputs(core_sdist: Path) -> None:
     """PyPI の source 配布物には core の source と build に必要な公開 file だけが入る。"""
-    files = _sdist_paths(core_sdist)
+    files = _sdist_files(core_sdist).keys()
     build_inputs = {"README.md", "LICENSE", "pyproject.toml", "PKG-INFO", ".gitignore"}
 
     assert {"README.md", "LICENSE", "pyproject.toml", "PKG-INFO"} <= files
@@ -43,11 +47,45 @@ def test_sdist_omits_every_private_snapshot_exclusion(
     public_snapshot_config: dict[str, str], core_sdist: Path
 ) -> None:
     """公開用 repository から除く file は、PyPI の source 配布物からも除かれる。"""
-    # Matching needs paths and file kinds, not Git object IDs. Check generated
-    # files such as PKG-INFO against exclude without requiring an include rule.
-    entries = [Entry(path, "100644", "blob", "") for path in _sdist_paths(core_sdist)]
-    private = match_lists(entries, public_snapshot_config)["exclude"]
+    exclusions = [
+        PurePosixPath(line.strip().strip("/"))
+        for line in public_snapshot_config["exclude"].splitlines()
+        if line.strip()
+    ]
+    paths = {PurePosixPath(path) for path in _sdist_files(core_sdist)}
+    private = {
+        str(path)
+        for path in paths
+        if any(path == excluded or excluded in path.parents for excluded in exclusions)
+    }
     assert not private, f"private snapshot files in sdist: {sorted(private)}"
+
+
+@pytest.mark.req("SP-LF-037")
+def test_distributions_contain_no_restricted_terms(core_sdist: Path, core_wheel: Path) -> None:
+    """wheel と source 配布物の file 名と内容には、非公開の語を載せない。"""
+    word_list = ROOT / "noren-words.txt"
+    if not word_list.exists() and not (ROOT / "AGENTS.md").exists() and not (ROOT / ".nf").exists():
+        pytest.skip("the public snapshot does not include the private word list")
+    words = [
+        unicodedata.normalize("NFKC", word.strip()).casefold()
+        for word in word_list.read_text(encoding="utf-8").splitlines()
+        if word.strip()
+    ]
+    files = {"sdist": _sdist_files(core_sdist)}
+    with zipfile.ZipFile(core_wheel) as archive:
+        files["wheel"] = {
+            name: archive.read(name) for name in archive.namelist() if not name.endswith("/")
+        }
+    violations = []
+    for kind, contents in files.items():
+        for path, data in contents.items():
+            normalized = unicodedata.normalize(
+                "NFKC", path + "\n" + data.decode("utf-8", errors="replace")
+            ).casefold()
+            if any(word in normalized for word in words):
+                violations.append(f"{kind}: {path}")
+    assert not violations, f"restricted terms in distribution files: {violations}"
 
 
 @pytest.mark.req("SP-LF-017")

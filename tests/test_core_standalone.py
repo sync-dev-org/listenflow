@@ -12,8 +12,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from noren.git import Entry
-from noren.publishing import choose_files
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -45,29 +43,6 @@ def _private_distribution_checks() -> dict[str, list[str]]:
         if (REPOSITORY_ROOT / "AGENTS.md").exists() or (REPOSITORY_ROOT / ".nf").exists():
             raise
         pytest.skip("the public snapshot does not include private engine module names")
-
-
-@pytest.mark.req("SP-LF-037")
-def test_public_files_omit_private_engine_names(public_snapshot_config: dict[str, str]) -> None:
-    """公開用 repository に写す file の名前と内容には、非公開の engine module の名前を載せない。"""
-    checks = _private_distribution_checks()
-    entries = []
-    records = _run("git", "ls-files", "--stage", "-z", cwd=REPOSITORY_ROOT).stdout.split("\0")
-    for record in filter(None, records):
-        metadata, path = record.split("\t", 1)
-        mode, oid, _ = metadata.split()
-        entries.append(Entry(path, mode, "commit" if mode == "160000" else "blob", oid))
-    selected = choose_files(entries, public_snapshot_config, {})
-    names = checks["module_import_names"] + [
-        name.removeprefix("listenflow-") for name in checks["module_distribution_names"]
-    ]
-    offending = []
-    for entry in selected:
-        path = entry.path
-        text = path.lower() + "\n" + (REPOSITORY_ROOT / path).read_text(encoding="utf-8").lower()
-        if any(name in text for name in names):
-            offending.append(path)
-    assert not offending, f"private engine names in public files: {offending}"
 
 
 def _run(*command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -181,7 +156,9 @@ def test_tracked_path_parser_keeps_whitespace_inside_paths() -> None:
     }
 
 
+@pytest.mark.req("SP-LF-071")
 def test_root_test_and_lint_configuration_is_core_only() -> None:
+    """core の検査と文書の build は別の dependency group で依存を導入する。"""
     config = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependency_names = {
         re.split(r"[<>=!~]", dependency, maxsplit=1)[0]
@@ -189,13 +166,16 @@ def test_root_test_and_lint_configuration_is_core_only() -> None:
     }
 
     assert dependency_names == {
-        "mkdocs-material",
-        "mkdocstrings[python]",
-        "noren",
         "pytest",
         "pytest-asyncio",
+        "pyyaml",
         "ruff",
     }
+    docs_dependency_names = {
+        re.split(r"[<>=!~]", dependency, maxsplit=1)[0]
+        for dependency in config["dependency-groups"]["docs"]
+    }
+    assert docs_dependency_names == {"mkdocs-material", "mkdocstrings[python]"}
     assert "workspace" not in config.get("tool", {}).get("uv", {})
     assert "sources" not in config.get("tool", {}).get("uv", {})
     assert "override-dependencies" not in config.get("tool", {}).get("uv", {})
@@ -265,7 +245,7 @@ def test_core_gitignore_drops_nested_module_paths() -> None:
 
 
 @pytest.mark.req("SP-LF-016")
-def test_private_engine_modules_remain_outside_core(core_wheel: Path) -> None:
+def test_engine_modules_remain_outside_core(core_wheel: Path) -> None:
     """core の checkout と wheel は別の repository が所有する engine module を持たない。"""
     checks = _private_distribution_checks()
     tracked = _tracked_paths(_run("git", "ls-files", "--stage", cwd=REPOSITORY_ROOT).stdout)
@@ -276,7 +256,7 @@ def test_private_engine_modules_remain_outside_core(core_wheel: Path) -> None:
     assert not any(
         path.startswith(f"listenflow/{module}/")
         for path in files
-        for module in checks["module_import_names"]
+        for module in checks["wheel_module_import_names"]
     )
 
 
@@ -387,25 +367,32 @@ assert input_format is listenflow.EngineInputFormat.PCM_S16LE
 
 
 @pytest.mark.req("SP-LF-016")
-def test_core_only_wheel_guides_installation_of_fastest_whisper(
-    core_python: Path, tmp_path: Path
+@pytest.mark.parametrize(
+    ("module", "distribution"),
+    [
+        ("faster_whisper", "listenflow-faster-whisper"),
+        ("fastest_whisper", "listenflow-fastest-whisper"),
+    ],
+)
+def test_core_only_wheel_guides_installation_of_published_engine_modules(
+    core_python: Path, tmp_path: Path, module: str, distribution: str
 ) -> None:
     """core だけを導入した利用側は、公開済みの未導入 engine module の導入先と入れ方を案内される。"""
-    code = """
+    code = f"""
 import listenflow
 
 try:
-    listenflow.fastest_whisper
+    getattr(listenflow, {module!r})
 except listenflow.ModuleNotInstalledError as exc:
     assert isinstance(exc, listenflow.STTError)
     assert isinstance(exc, ImportError)
     assert isinstance(exc.__cause__, ModuleNotFoundError)
-    assert exc.__cause__.name == "listenflow.fastest_whisper"
+    assert exc.__cause__.name == "listenflow.{module}"
     guidance = dict(part.split("=", 1) for part in str(exc).split("; "))
     for field in ("why", "what"):
-        assert "listenflow-fastest-whisper" in guidance[field]
-        assert "listenflow.fastest_whisper" in guidance[field]
-    assert guidance["how"] == "pip install listenflow-fastest-whisper"
+        assert {distribution!r} in guidance[field]
+        assert "listenflow.{module}" in guidance[field]
+    assert guidance["how"] == "pip install {distribution}"
 else:
     raise AssertionError("missing published engine module unexpectedly imported")
 """

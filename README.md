@@ -275,5 +275,5 @@ uv run pytest
 uv run ruff check
 uv run ruff format --check
 uv build
-uv run mkdocs build --strict
+uv run --group docs mkdocs build --strict
 ```
