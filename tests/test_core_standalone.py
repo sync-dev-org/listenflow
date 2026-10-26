@@ -224,17 +224,18 @@ def test_public_readme_omits_private_engine_module_references() -> None:
     assert not any(term in readme for term in checks["module_distribution_names"])
 
 
-def test_development_docs_describe_distribution_routes() -> None:
+def test_deploy_document_describes_core_distribution_route() -> None:
+    """The deploy document describes the core distribution route without module checkout paths."""
     try:
-        agents = (REPOSITORY_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        deploy = (REPOSITORY_ROOT / ".nf/docs/deploy.md").read_text(encoding="utf-8")
     except FileNotFoundError:
         if (REPOSITORY_ROOT / ".nf").exists():
             raise
         pytest.skip("the public snapshot does not include development instructions")
-    assert not any(term in agents for term in PROHIBITED_DOCUMENTATION_TERMS)
+    assert not any(term in deploy for term in PROHIBITED_DOCUMENTATION_TERMS)
     checks = _private_distribution_checks()
-    assert not any("packages/" + name in agents for name in checks["module_distribution_names"])
-    assert all(route in agents for route in checks["distribution_routes"])
+    assert not any("packages/" + name in deploy for name in checks["module_distribution_names"])
+    assert all(route in deploy for route in checks["distribution_routes"])
 
 
 def test_core_gitignore_drops_nested_module_paths() -> None:
@@ -444,7 +445,7 @@ def _isolated_document_check(tmp_path: Path) -> Callable[[], None]:
     test_path.parent.mkdir()
     test_path.write_text(Path(__file__).read_text(encoding="utf-8"), encoding="utf-8")
     (tmp_path / "README.md").write_text("public documentation\n", encoding="utf-8")
-    return runpy.run_path(str(test_path))["test_development_docs_describe_distribution_routes"]
+    return runpy.run_path(str(test_path))["test_deploy_document_describes_core_distribution_route"]
 
 
 @pytest.mark.req("SP-LF-036")
@@ -458,13 +459,13 @@ def test_public_snapshot_skips_the_development_document_check(tmp_path: Path) ->
 
 @pytest.mark.req("SP-LF-036")
 @pytest.mark.parametrize("missing", [False, True])
-def test_development_checkout_requires_readable_agent_instructions(
+def test_development_checkout_requires_a_readable_deploy_document(
     tmp_path: Path, missing: bool
 ) -> None:
-    """A development checkout with missing or unreadable agent instructions fails its check."""
-    (tmp_path / ".nf").mkdir()
+    """A development checkout with a missing or unreadable deploy document fails its check."""
+    (tmp_path / ".nf/docs").mkdir(parents=True)
     if not missing:
-        (tmp_path / "AGENTS.md").mkdir()
+        (tmp_path / ".nf/docs/deploy.md").mkdir()
     check = _isolated_document_check(tmp_path)
 
     with pytest.raises(FileNotFoundError if missing else IsADirectoryError):

@@ -41,12 +41,15 @@ def _requirement_ids_in_tests() -> set[str]:
 
 def test_requirement_markers_refer_to_existing_requirements() -> None:
     try:
-        spec = (REPOSITORY_ROOT / ".nf/docs/spec.md").read_text(encoding="utf-8")
+        documents = [
+            (REPOSITORY_ROOT / f".nf/docs/{name}.md").read_text(encoding="utf-8")
+            for name in ("spec", "deploy", "development")
+        ]
     except FileNotFoundError:
         if (REPOSITORY_ROOT / "AGENTS.md").exists() or (REPOSITORY_ROOT / ".nf").exists():
             raise
-        pytest.skip("the public snapshot does not include the private spec document")
-    existing_ids = set(re.findall(r"^\*\*(SP-LF-\d{3})\*\* ", spec, re.MULTILINE))
+        pytest.skip("the public snapshot does not include the private commitment documents")
+    existing_ids = set(re.findall(r"^\*\*(SP-LF-\d{3})\*\* ", "\n".join(documents), re.MULTILINE))
     marked_ids = _requirement_ids_in_tests()
 
     assert marked_ids, "no parent requirement IDs are attached to tests"
@@ -73,13 +76,19 @@ def test_public_snapshot_skips_the_private_requirement_check(tmp_path: Path) -> 
 
 @pytest.mark.req("SP-LF-036")
 @pytest.mark.parametrize("development_file", ["AGENTS.md", ".nf/other.md"])
+@pytest.mark.parametrize("missing_document", ["spec", "deploy", "development"])
 def test_development_checkout_requires_its_requirement_document(
-    tmp_path: Path, development_file: str
+    tmp_path: Path, development_file: str, missing_document: str
 ) -> None:
-    """A development checkout with a missing requirement document fails its check."""
+    """A development checkout requires all three documents that define its commitments."""
     path = tmp_path / development_file
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("development file\n", encoding="utf-8")
+    for name in ("spec", "deploy", "development"):
+        if name != missing_document:
+            document = tmp_path / f".nf/docs/{name}.md"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_text("**SP-LF-036** | Source: test\n", encoding="utf-8")
     check = _isolated_requirement_check(tmp_path)
 
     with pytest.raises(FileNotFoundError):
@@ -87,9 +96,18 @@ def test_development_checkout_requires_its_requirement_document(
 
 
 @pytest.mark.req("SP-LF-036")
-def test_unreadable_requirement_document_fails_its_check(tmp_path: Path) -> None:
+@pytest.mark.parametrize("unreadable_document", ["spec", "deploy", "development"])
+def test_unreadable_requirement_document_fails_its_check(
+    tmp_path: Path, unreadable_document: str
+) -> None:
     """An existing requirement path that cannot be read fails instead of skipping."""
-    (tmp_path / ".nf/docs/spec.md").mkdir(parents=True)
+    for name in ("spec", "deploy", "development"):
+        document = tmp_path / f".nf/docs/{name}.md"
+        document.parent.mkdir(parents=True, exist_ok=True)
+        if name == unreadable_document:
+            document.mkdir()
+        else:
+            document.write_text("**SP-LF-036** | Source: test\n", encoding="utf-8")
     check = _isolated_requirement_check(tmp_path)
 
     with pytest.raises(IsADirectoryError):
