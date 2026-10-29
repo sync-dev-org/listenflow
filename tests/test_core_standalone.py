@@ -276,7 +276,7 @@ def test_core_wheel_owns_namespace_root_without_runtime_dependencies(core_wheel:
 
 
 @pytest.mark.req("SP-LF-016")
-@pytest.mark.parametrize("module", ["test_engine", "unknown_engine"])
+@pytest.mark.parametrize("module", ["test_engine", "unknown_engine", "faster_whisper"])
 def test_core_only_wheel_preserves_public_imports_without_module_attributes(
     core_python: Path, tmp_path: Path, module: str
 ) -> None:
@@ -296,7 +296,7 @@ else:
 
 
 @pytest.mark.req("SP-LF-016")
-@pytest.mark.parametrize("module", ["test_engine", "unknown_engine"])
+@pytest.mark.parametrize("module", ["test_engine", "unknown_engine", "faster_whisper"])
 def test_core_only_wheel_leaves_missing_module_imports_to_python(
     core_python: Path, tmp_path: Path, module: str
 ) -> None:
@@ -371,7 +371,6 @@ assert input_format is listenflow.EngineInputFormat.PCM_S16LE
 @pytest.mark.parametrize(
     ("module", "distribution"),
     [
-        ("faster_whisper", "listenflow-faster-whisper"),
         ("fastest_whisper", "listenflow-fastest-whisper"),
     ],
 )

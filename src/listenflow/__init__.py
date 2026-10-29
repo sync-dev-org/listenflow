@@ -80,7 +80,6 @@ __all__ = [
 
 # Add engine modules here when they are published on PyPI.
 _MODULE_DISTRIBUTIONS: dict[str, str] = {
-    "faster_whisper": "listenflow-faster-whisper",
     "fastest_whisper": "listenflow-fastest-whisper",
 }
 
