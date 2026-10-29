@@ -7,7 +7,12 @@ from collections.abc import AsyncIterator, Coroutine, Mapping
 from typing import Self
 
 from listenflow._async import cancel_once as _cancel, finish as _finish
-from listenflow.engine import EngineCapabilities, EngineInputFormat, validate_pcm_chunk
+from listenflow.engine import (
+    EngineCapabilities,
+    EngineInputFormat,
+    Segmentation,
+    validate_pcm_chunk,
+)
 from listenflow.errors import (
     ConfigurationError,
     EngineClosedError,
@@ -51,8 +56,17 @@ class STTEngineBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def _recognize(self, pcm_chunks: AsyncIterator[bytes]) -> AsyncIterator[TranscriptEvent]:
-        """Recognize PCM; cancellation and iterator closure must finish native work."""
+    def _recognize(
+        self,
+        pcm_chunks: AsyncIterator[bytes],
+        *,
+        segmentation: Segmentation = Segmentation.AUTO,
+    ) -> AsyncIterator[TranscriptEvent]:
+        """Recognize PCM and finish native work on cancellation or early closure.
+
+        AUTO calls omit the keyword so existing hooks remain usable. Modules
+        declaring single_utterance accept the keyword and honor SINGLE.
+        """
         raise NotImplementedError
 
     def _health_details(self) -> Mapping[str, object]:
@@ -118,13 +132,21 @@ class STTEngineBase(ABC):
             if acquired:
                 self._model_lock.release()
 
-    def stream(self, pcm_chunks: AsyncIterator[bytes]) -> AsyncIterator[TranscriptEvent]:
+    def stream(
+        self,
+        pcm_chunks: AsyncIterator[bytes],
+        *,
+        segmentation: Segmentation = Segmentation.AUTO,
+    ) -> AsyncIterator[TranscriptEvent]:
         """Start recognition on the first read and keep its slot through cleanup.
 
         The returned iterator supports aclose(). Close it explicitly when stopping
         before the end, or use contextlib.aclosing around the iterator.
+        SINGLE requires capabilities.single_utterance and transcribes the entire
+        input once without automatic boundaries. Invalid or unsupported choices
+        raise ConfigurationError on the first read, before recognition.
         """
-        return _EngineStream(self, pcm_chunks)
+        return _EngineStream(self, pcm_chunks, segmentation=segmentation)
 
     async def _acquire_model_slot(self, *, recognition: bool = False) -> None:
         self._check_open()
@@ -171,9 +193,23 @@ class STTEngineBase(ABC):
             acquired = True
             if not self._loaded:
                 raise EngineStateError("prepare the engine before recognition")
+            if not isinstance(stream._segmentation, Segmentation):
+                raise ConfigurationError(
+                    "segmentation must be Segmentation.AUTO or Segmentation.SINGLE"
+                )
+            if (
+                stream._segmentation is Segmentation.SINGLE
+                and not self.capabilities.single_utterance
+            ):
+                raise ConfigurationError("engine does not declare single_utterance support")
             self._stream_started.set()
             recognizing = True
-            iterator = aiter(self._recognize(self._validated_pcm(stream._pcm_chunks)))
+            pcm_chunks = self._validated_pcm(stream._pcm_chunks)
+            iterator = aiter(
+                self._recognize(pcm_chunks)
+                if stream._segmentation is Segmentation.AUTO
+                else self._recognize(pcm_chunks, segmentation=stream._segmentation)
+            )
             while True:
                 request = await stream._requests.get()
                 try:
@@ -258,9 +294,16 @@ class STTEngineBase(ABC):
 class _EngineStream(AsyncIterator[TranscriptEvent]):
     """Keep the model operation alive while the consumer pauses between reads."""
 
-    def __init__(self, engine: STTEngineBase, pcm_chunks: AsyncIterator[bytes]) -> None:
+    def __init__(
+        self,
+        engine: STTEngineBase,
+        pcm_chunks: AsyncIterator[bytes],
+        *,
+        segmentation: Segmentation,
+    ) -> None:
         self._engine = engine
         self._pcm_chunks = pcm_chunks
+        self._segmentation = segmentation
         self._requests: asyncio.Queue[asyncio.Future[TranscriptEvent]] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
         self._pending: asyncio.Future[TranscriptEvent] | None = None

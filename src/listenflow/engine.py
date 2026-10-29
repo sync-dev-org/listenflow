@@ -32,6 +32,13 @@ class EngineInputFormat(StrEnum):
     WAV_PCM_S16LE = "wav_pcm_s16le"
 
 
+class Segmentation(StrEnum):
+    """Choose automatic utterance boundaries or one caller-selected utterance."""
+
+    AUTO = "auto"
+    SINGLE = "single"
+
+
 _RAW_PCM_INPUT_FORMATS = (
     EngineInputFormat.PCM_S16LE,
     EngineInputFormat.PCM_F32,
@@ -199,6 +206,7 @@ class EngineCapabilities:
     diarization: DiarizationMode
     languages: frozenset[str]
     auto_language: bool
+    single_utterance: bool = False
 
     def __post_init__(self) -> None:
         finalization = frozenset(self.finalization)
@@ -211,6 +219,8 @@ class EngineCapabilities:
         object.__setattr__(self, "languages", languages)
         if type(self.auto_language) is not bool:
             raise TypeError("auto_language must be bool")
+        if type(self.single_utterance) is not bool:
+            raise TypeError("single_utterance must be bool")
         expected_types = {
             "transport": EngineTransport,
             "input_format": EngineInputFormat,
@@ -707,10 +717,25 @@ class UtteranceDecodePipeline:
         self._last_progress_monotonic_s: float | None = None
         self._active_stream = False
 
-    def stream(self, pcm_chunks: AsyncIterator[bytes]) -> AsyncIterator[TranscriptEvent]:
-        return self._stream(pcm_chunks)
+    def stream(
+        self,
+        pcm_chunks: AsyncIterator[bytes],
+        *,
+        segmentation: Segmentation = Segmentation.AUTO,
+    ) -> AsyncIterator[TranscriptEvent]:
+        """Decode automatic boundaries, or the whole input once with SINGLE.
 
-    async def _stream(self, pcm_chunks: AsyncIterator[bytes]) -> AsyncIterator[TranscriptEvent]:
+        SINGLE retains all PCM until end of input, bypassing voice detection and
+        min_voiced_s. Non-empty input emits one start/end pair even without text;
+        empty input emits nothing and is not decoded. Offsets start at zero.
+        """
+        if not isinstance(segmentation, Segmentation):
+            raise ValueError("segmentation must be Segmentation.AUTO or Segmentation.SINGLE")
+        return self._stream(pcm_chunks, segmentation=segmentation)
+
+    async def _stream(
+        self, pcm_chunks: AsyncIterator[bytes], *, segmentation: Segmentation
+    ) -> AsyncIterator[TranscriptEvent]:
         if self._active_stream:
             raise RuntimeError("UtteranceDecodePipeline already has an active stream")
         self._active_stream = True
@@ -765,14 +790,20 @@ class UtteranceDecodePipeline:
                 next_emit_utterance_id += 1
 
         def close_current_utterance(pcm: bytes, *, voice_start_s: float) -> None:
-            if session.last_voice_offset_s is None:
-                raise RuntimeError("active utterance has no voiced audio")
-            # Recover whole samples so offset rounding cannot shorten an exact threshold.
-            voiced_samples = round((session.last_voice_offset_s - voice_start_s) * SAMPLE_RATE_HZ)
+            if segmentation is Segmentation.AUTO:
+                if session.last_voice_offset_s is None:
+                    raise RuntimeError("active utterance has no voiced audio")
+                # Recover whole samples so rounding cannot shorten an exact threshold.
+                voiced_samples = round(
+                    (session.last_voice_offset_s - voice_start_s) * SAMPLE_RATE_HZ
+                )
+                if voiced_samples / SAMPLE_RATE_HZ < self._boundary_settings.min_voiced_s:
+                    utterance = session._close_current_utterance(pcm)
+                    queue_events(
+                        session._finalize_closed_events_for_pipeline(utterance.utterance_id)
+                    )
+                    return
             utterance = session._close_current_utterance(pcm)
-            if voiced_samples / SAMPLE_RATE_HZ < self._boundary_settings.min_voiced_s:
-                queue_events(session._finalize_closed_events_for_pipeline(utterance.utterance_id))
-                return
             self._pending_decode_utterances += 1
             decode_queue.put_nowait(utterance)
 
@@ -787,6 +818,22 @@ class UtteranceDecodePipeline:
                 async for chunk in pcm_chunks:
                     if stop_requested:
                         break
+                    if segmentation is Segmentation.SINGLE:
+                        validate_pcm_chunk(chunk, input_format=self._input_format)
+                        if chunk:
+                            if current_pcm is None:
+                                current_pcm = bytearray()
+                                session.in_utterance = True
+                                session.emitted_start = True
+                                session._current_start_offset_s = 0.0
+                                queue_events([UtteranceStart(session.utterance_id, 0.0)])
+                            current_pcm.extend(chunk)
+                            session.input_offset_s = (
+                                len(current_pcm) / sample_width / SAMPLE_RATE_HZ
+                            )
+                        self._record_progress()
+                        self._processed_pcm_chunks += 1
+                        continue
                     was_in_utterance = session.in_utterance
                     chunk_start_s = session.input_offset_s
                     events = session.observe_pcm(chunk)

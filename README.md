@@ -71,6 +71,34 @@ files and converts formats before calling the function.
 
 See the [complete PCM transcription API](https://sync-dev-org.github.io/listenflow/api/transcription/).
 
+### One caller-selected utterance
+
+Use `transcribe_utterance(engine, pcm)` when the application has selected the audio range of one
+utterance, including any pauses within it:
+
+```python
+from listenflow import Final, STTEngineBase, transcribe_utterance
+
+
+async def recognize_utterance(engine: STTEngineBase, pcm: bytes) -> list[Final]:
+    async with engine:
+        return await transcribe_utterance(engine, pcm)
+```
+
+The engine must declare `engine.capabilities.single_utterance == True`. The function requests
+`engine.stream(pcm_chunks, segmentation=Segmentation.SINGLE)` and collects its final events.
+`Segmentation` is available from `listenflow`; `AUTO` is the default for ordinary `stream()` calls.
+SINGLE retains all supplied audio through end of input and decodes it once, regardless of chunk
+boundaries or internal silence. Voice detection and `min_voiced_s` do not filter this input.
+Empty PCM is not decoded and returns `[]`; audio without recognized text also returns `[]`.
+Offsets and utterance IDs start from this call's input, and earlier final events remain unchanged.
+
+The application owns the retained audio and chooses which contiguous range to submit again when
+speech continues. The caller prepares and closes the engine. Unsupported SINGLE requests raise
+`ConfigurationError` before recognition; overlapping recognition raises `EngineStateError`
+without disturbing the active stream. `transcribe()` continues to use the engine's default
+segmentation.
+
 ### Synchronous callers
 
 Use the core's three helpers to call an engine from synchronous code:
@@ -138,6 +166,7 @@ and after closure:
 | --- | --- |
 | `languages` | Accepted language codes, as a `frozenset[str]`. An empty set means the engine has no language argument and declares no languages. |
 | `auto_language` | Whether a language of `None` selects automatic detection. |
+| `single_utterance` | Whether SINGLE is supported; defaults to `False`. |
 | `transport` | In-process, WebSocket, gRPC, or HTTP per utterance. |
 | `input_format` | The audio representation accepted by the engine. |
 | `partial_mode` | Replace, append, commit-only, or no provisional output. |
@@ -209,7 +238,7 @@ The module owns its recognition runtime, configuration, and supported platforms 
 | `capabilities` | Return the static `EngineCapabilities` property. |
 | `async _load()` | Load resources and run trial inference. Clean up resources from an unsuccessful load. |
 | `async _release()` | Return resources from a successful load. |
-| `_recognize(pcm_chunks)` | Return an asynchronous transcript iterator. Finish native work and close owned iterators before returning from cancellation or early closure. |
+| `_recognize(pcm_chunks, *, segmentation=Segmentation.AUTO)` | Return an asynchronous transcript iterator. Finish native work and close owned iterators before returning from cancellation or early closure. |
 | `_health_details()` | Return a mapping of recognition fields only; the default is empty. |
 
 Call the parent's `_mark_progress()` after processing a PCM chunk or completing an utterance decode.
@@ -222,13 +251,21 @@ constructor to keep the progress timestamp in the parent, and return the pipelin
 counters and decode fields from `_health_details()`. For an engine with its own streaming
 recognition, use `UtteranceBoundarySession` to translate PCM and recognition observations into events.
 
+To support one caller-selected utterance, declare `EngineCapabilities.single_utterance=True`,
+accept the `segmentation` keyword in `_recognize()`, and forward it to
+`pipeline.stream(pcm_chunks, segmentation=segmentation)`. Close that iterator on cancellation or
+early consumer closure. The pipeline implements SINGLE without voice filtering or segmentation.
+AUTO calls omit the keyword when invoking `_recognize`, so existing modules with the one-argument
+hook keep working. See the [engine API](https://sync-dev-org.github.io/listenflow/api/engine/)
+for a hook example.
+
 ## Utterance boundaries
 
 - `has_voice` checks whether any sample reaches a normalized full-scale amplitude threshold.
   The threshold must be a finite `float` between `0.0` and `1.0`; the helper is amplitude-based.
 - `UtteranceBoundarySettings` configures the silence threshold, voice threshold, preroll, and
-  minimum voiced span (`min_voiced_s`, default `0.0`). The pipeline skips decoding shorter
-  utterances and emits only `UtteranceStart` and `UtteranceEnd`; the start event remains immediate.
+  minimum voiced span (`min_voiced_s`, default `0.0`). In AUTO mode, the pipeline skips decoding
+  shorter utterances and emits only `UtteranceStart` and `UtteranceEnd`; the start event remains immediate.
 - `UtteranceBoundarySession` tracks audio offsets and utterance IDs. Feed PCM through
   `observe_pcm()` and recognition results through `observe_provisional()` or `observe_final()`.
   Call `finish_input()` when input ends, then drain `finalize_events()`.
@@ -237,6 +274,8 @@ recognition, use `UtteranceBoundarySession` to translate PCM and recognition obs
   `ProvisionalObservation` or `FinalObservation` records. `stream()` yields transcript events
   in utterance order and completes outstanding decoding when input ends normally. Failure or early
   closure cancels an active decode and waits for its cleanup before allowing reuse.
+  With `segmentation=Segmentation.SINGLE`, it instead decodes all non-empty PCM once at end of
+  input and emits a single start/end pair. Both modes share event handling and cleanup.
 - `on_progress` optionally forwards PCM-processing and decode-completion notifications to an engine.
   With this callback, the pipeline stores no timestamp. Used on its own, the pipeline records
   `last_progress_monotonic_s`. Reading events does not advance progress.

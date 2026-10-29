@@ -33,11 +33,13 @@ def _pcm_chunk(sample: int, *, duration_s: float) -> bytes:
 @pytest.mark.req("SP-LF-010")
 @pytest.mark.req("SP-LF-014")
 @pytest.mark.req("SP-LF-050")
+@pytest.mark.req("SP-LF-098")
 def test_engine_base_keeps_public_method_signatures_and_requires_capabilities() -> None:
     """engine は prepare()、stream()、health() を公開し、capabilities の実装を求める。"""
     assert str(inspect.signature(STTEngineBase.prepare)) == "(self) -> 'None'"
     assert str(inspect.signature(STTEngineBase.stream)) == (
-        "(self, pcm_chunks: 'AsyncIterator[bytes]') -> 'AsyncIterator[TranscriptEvent]'"
+        "(self, pcm_chunks: 'AsyncIterator[bytes]', *, "
+        "segmentation: 'Segmentation' = <Segmentation.AUTO: 'auto'>) -> 'AsyncIterator[TranscriptEvent]'"
     )
     assert str(inspect.signature(STTEngineBase.health)) == "(self) -> 'HealthSnapshot'"
     assert STTEngineBase.capabilities.__isabstractmethod__

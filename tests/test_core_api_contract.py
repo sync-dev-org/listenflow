@@ -151,6 +151,7 @@ def test_package_root_does_not_publish_language_constants_or_validators() -> Non
         "ProvisionalObservation",
         "STTEngineBase",
         "STTError",
+        "Segmentation",
         "TimestampDetail",
         "TranscriptEvent",
         "UtteranceBoundarySession",
@@ -172,6 +173,7 @@ def test_package_root_does_not_publish_language_constants_or_validators() -> Non
         "run_sync",
         "sync",
         "transcribe",
+        "transcribe_utterance",
         "transcription",
     }
     public_names = set(listenflow.__all__) | {

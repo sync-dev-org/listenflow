@@ -212,6 +212,7 @@ def test_pipeline_rejects_old_separate_boundary_arguments() -> None:
 @pytest.mark.req("SP-LF-031")
 @pytest.mark.req("SP-LF-001")
 @pytest.mark.req("SP-LF-014")
+@pytest.mark.req("SP-LF-098")
 def test_ac_24_1_public_pipeline_surface_is_typed_and_read_only() -> None:
     """公開 API は変更できない閉じた発話の型、操作の口、pipeline の待機中の値を持つ。"""
     engine_module = __import__("listenflow.engine", fromlist=["engine"])
@@ -254,7 +255,8 @@ def test_ac_24_1_public_pipeline_surface_is_typed_and_read_only() -> None:
 
     assert str(inspect.signature(STTEngineBase.prepare)) == "(self) -> 'None'"
     assert str(inspect.signature(STTEngineBase.stream)) == (
-        "(self, pcm_chunks: 'AsyncIterator[bytes]') -> 'AsyncIterator[TranscriptEvent]'"
+        "(self, pcm_chunks: 'AsyncIterator[bytes]', *, "
+        "segmentation: 'Segmentation' = <Segmentation.AUTO: 'auto'>) -> 'AsyncIterator[TranscriptEvent]'"
     )
     assert str(inspect.signature(STTEngineBase.health)) == "(self) -> 'HealthSnapshot'"
     expected_boundary_signatures = {

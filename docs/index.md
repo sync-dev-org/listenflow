@@ -63,6 +63,20 @@ emitted and propagates stream errors unchanged. The caller prepares and closes t
 supplies PCM matching its input format. Audio file reading and format conversion belong to the
 application. See the [complete PCM transcription API](api/transcription.md).
 
+For audio the application has already selected as one utterance, use
+`await transcribe_utterance(engine, pcm)`. This core function requests
+`engine.stream(pcm_chunks, segmentation=Segmentation.SINGLE)` and returns its final events.
+`Segmentation` is available from `listenflow`; `AUTO` remains the default for ordinary streams.
+The engine must declare `EngineCapabilities.single_utterance=True` (the default is `False`), or
+the request raises `ConfigurationError` before recognition.
+
+SINGLE submits all audio once at end of input, regardless of silence or chunk boundaries, and
+bypasses voice detection and `min_voiced_s`. Empty PCM skips decoding and returns `[]`; audio
+without text also returns `[]`. Results keep offsets from this call's PCM and do not change earlier
+final events. The application retains audio and chooses the contiguous range to resubmit when
+speech continues. The caller prepares and closes the engine, and concurrent streams are rejected
+without disturbing the first. `transcribe()` keeps the engine's default segmentation behavior.
+
 ### Synchronous callers
 
 For synchronous code, call `run_sync(engine.prepare())`, read
@@ -102,6 +116,7 @@ See the [transcript event API](api/events.md).
 `EngineCapabilities` declares accepted `languages` as a `frozenset[str]`, `auto_language`,
 transport, input format, provisional output mode, finalization modes, timestamp detail, and speaker
 labeling. Its values are immutable and readable before preparation and after closure.
+`single_utterance` declares support for `Segmentation.SINGLE` and defaults to `False`.
 
 `HealthSnapshot` reports `state` (`EngineState.UNPREPARED`, `READY`, or `CLOSED`), `busy`, and
 `last_progress_monotonic_s`. Loading or a failed preparation remains `UNPREPARED`. Closing starts
@@ -162,6 +177,12 @@ decode fields through `_health_details()`.
 The module owns model loading, recognition, runtime dependencies, configuration, and supported
 platforms. Use the shared utterance helpers when they match the engine's recognition interface.
 
+To support SINGLE, declare `single_utterance=True`, accept the keyword-only
+`segmentation=Segmentation.AUTO` argument in `_recognize()`, and forward it to
+`pipeline.stream(pcm_chunks, segmentation=segmentation)`. Close the pipeline iterator when the
+consumer stops early. The parent omits the keyword for AUTO, so existing one-argument hooks work
+unchanged. See the [engine hook example](api/engine.md#supporting-one-caller-selected-utterance).
+
 ## Utterance boundaries
 
 `has_voice` checks samples against a normalized amplitude threshold. Supply a finite `float` in
@@ -174,8 +195,8 @@ input. This path fits engines that already stream recognition observations.
 
 `UtteranceDecodePipeline` fits engines that decode complete utterances. Configure silence, voice
 threshold, preroll, and the minimum voiced span with `UtteranceBoundarySettings`, and supply an async
-decoding callback. `min_voiced_s` defaults to `0.0`, which decodes every utterance. A positive value
-skips decoding utterances whose voiced span is shorter than that many seconds, including utterances
+decoding callback. In AUTO mode, `min_voiced_s` defaults to `0.0`, which decodes every utterance.
+A positive value skips decoding utterances whose voiced span is shorter than that many seconds, including utterances
 closed at end of input. The span runs from the beginning of the first voiced chunk to the end of the
 last voiced chunk, including any silence between them, and excludes preroll and trailing silence.
 Skipped utterances emit only `UtteranceStart` and `UtteranceEnd`; the start event still arrives as
@@ -223,6 +244,11 @@ decode and waits for cleanup before reuse. When the optional `on_progress` callb
 the standalone pipeline records `last_progress_monotonic_s` after PCM processing and decode
 completion. With the callback, the receiver owns the timestamp and the pipeline leaves it `None`.
 Event reading does not advance progress.
+
+Passing `segmentation=Segmentation.SINGLE` to the pipeline collects all PCM through end of input
+and decodes it once. It bypasses voice detection and `min_voiced_s`, preserves every sample, and
+closes a single start/end pair even when no text is recognized. Empty input emits nothing and is
+not decoded. Event handling and cleanup are shared with AUTO.
 
 See the [utterance boundary API](api/utterances.md).
 

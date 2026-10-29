@@ -18,6 +18,7 @@ from listenflow.engine import (
     OfflineModelDirectorySource,
     PartialMode,
     ProvisionalObservation,
+    Segmentation,
     TimestampDetail,
     UtteranceBoundarySettings,
     UtteranceBoundarySession,
@@ -28,7 +29,7 @@ from listenflow.base import STTEngineBase
 from listenflow.events import Final, Partial, TranscriptEvent, UtteranceEnd, UtteranceStart
 from listenflow.health import BiasApplicationSnapshot, EngineState, HealthSnapshot
 from listenflow.sync import iterate_async, iterate_sync, run_sync
-from listenflow.transcription import transcribe
+from listenflow.transcription import transcribe, transcribe_utterance
 from listenflow.errors import (
     ConfigurationError,
     EngineClosedError,
@@ -63,6 +64,7 @@ __all__ = [
     "ProvisionalObservation",
     "STTEngineBase",
     "STTError",
+    "Segmentation",
     "TimestampDetail",
     "TranscriptEvent",
     "UtteranceEnd",
@@ -76,6 +78,7 @@ __all__ = [
     "iterate_sync",
     "run_sync",
     "transcribe",
+    "transcribe_utterance",
 ]
 
 # Add engine modules here when they are published on PyPI.
