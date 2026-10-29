@@ -103,12 +103,12 @@ def test_ac_11_14_has_voice_is_a_typed_package_root_export() -> None:
     assert "has_voice" in listenflow.__all__
     assert listenflow.has_voice is has_voice
     assert str(inspect.signature(has_voice)) == (
-        "(chunk: 'bytes', *, input_format: 'EngineInputFormat', voice_threshold: 'float') -> 'bool'"
+        "(chunk: 'bytes', *, input_format: 'EngineInputFormat', voice_rms_threshold: 'float') -> 'bool'"
     )
     assert has_voice(
-        b"\x00\x00",
+        b"\x00\x40",
         input_format=EngineInputFormat.PCM_S16LE,
-        voice_threshold=0.0,
+        voice_rms_threshold=0.5,
     )
 
 

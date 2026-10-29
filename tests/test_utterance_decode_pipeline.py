@@ -97,7 +97,7 @@ async def _empty_decode(
 
 
 @pytest.mark.req("SP-LF-035")
-@pytest.mark.req("SP-LF-005")
+@pytest.mark.req("SP-LF-101")
 def test_boundary_settings_are_public_immutable_and_have_shared_defaults() -> None:
     """利用側は発話境界設定を一つの変更できない値として省略して構築できる。"""
     engine_module = __import__("listenflow.engine", fromlist=["engine"])
@@ -107,14 +107,14 @@ def test_boundary_settings_are_public_immutable_and_have_shared_defaults() -> No
     assert "UtteranceBoundarySettings" in listenflow.__all__
     settings = settings_type()
     assert settings.silence_threshold_s == 0.8
-    assert settings.voice_threshold == engine_module.DEFAULT_VOICE_THRESHOLD
+    assert settings.voice_rms_threshold == 0.01
     assert settings.preroll_s == 0.3
     with pytest.raises(FrozenInstanceError):
         settings.preroll_s = 0.5
 
 
 @pytest.mark.req("SP-LF-035")
-@pytest.mark.req("SP-LF-005")
+@pytest.mark.req("SP-LF-101")
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     [
@@ -124,13 +124,14 @@ def test_boundary_settings_are_public_immutable_and_have_shared_defaults() -> No
         ("silence_threshold_s", float("nan")),
         ("silence_threshold_s", True),
         ("silence_threshold_s", "0.1"),
-        ("voice_threshold", -0.1),
-        ("voice_threshold", 1.1),
-        ("voice_threshold", float("inf")),
-        ("voice_threshold", float("nan")),
-        ("voice_threshold", True),
-        ("voice_threshold", 1),
-        ("voice_threshold", "0.1"),
+        ("voice_rms_threshold", -0.1),
+        ("voice_rms_threshold", 0.0),
+        ("voice_rms_threshold", 1.1),
+        ("voice_rms_threshold", float("inf")),
+        ("voice_rms_threshold", float("nan")),
+        ("voice_rms_threshold", True),
+        ("voice_rms_threshold", 1),
+        ("voice_rms_threshold", "0.1"),
         ("preroll_s", -0.1),
         ("preroll_s", float("inf")),
         ("preroll_s", float("nan")),
@@ -203,8 +204,8 @@ def test_pipeline_rejects_old_separate_boundary_arguments() -> None:
     """一括 decode pipeline は発話境界設定を一つの値として受け取る。"""
     with pytest.raises(TypeError):
         UtteranceDecodePipeline(
-            silence_threshold_s=0.1,
-            voice_threshold=0.2,
+            silence_threshold_s=0.096,
+            voice_rms_threshold=0.2,
             decode_utterance=_empty_decode,
         )
 
@@ -233,8 +234,8 @@ def test_ac_24_1_public_pipeline_surface_is_typed_and_read_only() -> None:
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.1,
-            voice_threshold=0.2,
+            silence_threshold_s=0.096,
+            voice_rms_threshold=0.2,
         ),
         decode_utterance=_empty_decode,
     )
@@ -307,11 +308,11 @@ def test_health_snapshot_reports_shared_state_and_recognition_idle_defaults() ->
 def test_ac_24_13_15_closed_state_targets_only_its_id_until_end() -> None:
     """発話の通知は ID ごとに相関し、終了後の発話には通知を追加しない。"""
     session = UtteranceBoundarySession(
-        silence_threshold_s=0.05,
-        voice_threshold=500 / 32768,
+        silence_threshold_s=0.064,
+        voice_rms_threshold=500 / 32768,
     )
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.1)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.096)
 
     assert session.observe_pcm(voice) == [UtteranceStart(utterance_id=1, ts_offset_s=0.0)]
     session.observe_pcm(silence)
@@ -321,7 +322,7 @@ def test_ac_24_13_15_closed_state_targets_only_its_id_until_end() -> None:
         utterance_id=1,
         pcm=voice + silence,
         start_offset_s=0.0,
-        end_offset_s=pytest.approx(0.06),
+        end_offset_s=pytest.approx(0.08),
     )
     assert session.utterance_id == 2
     assert not session.in_utterance
@@ -337,7 +338,7 @@ def test_ac_24_13_15_closed_state_targets_only_its_id_until_end() -> None:
     assert closed_events == [
         Partial(
             utterance_id=1,
-            ts_offset_s=pytest.approx(0.06),
+            ts_offset_s=pytest.approx(0.08),
             text="closed",
             speaker="a",
         )
@@ -349,11 +350,11 @@ def test_ac_24_13_15_closed_state_targets_only_its_id_until_end() -> None:
     assert session.finalize_events(utterance_id=1) == [
         Final(
             utterance_id=1,
-            ts_offset_s=pytest.approx(0.06),
+            ts_offset_s=pytest.approx(0.08),
             text="closed",
             speaker="a",
         ),
-        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.06)),
+        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.08)),
     ]
     assert session.utterance_id == 2
     assert session.in_utterance
@@ -376,23 +377,23 @@ def test_ac_24_13_15_closed_state_targets_only_its_id_until_end() -> None:
 def test_ac_24_13_maybe_end_event_targets_only_the_live_closed_id() -> None:
     """発話の終了は対象の ID だけに通知する。"""
     session = UtteranceBoundarySession(
-        silence_threshold_s=0.05,
-        voice_threshold=500 / 32768,
+        silence_threshold_s=0.064,
+        voice_rms_threshold=500 / 32768,
     )
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.1)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.096)
 
     session.observe_pcm(voice)
     session.observe_pcm(silence)
     first = session._close_current_utterance(voice + silence)
     assert session.observe_pcm(voice) == [
-        UtteranceStart(utterance_id=2, ts_offset_s=pytest.approx(0.11))
+        UtteranceStart(utterance_id=2, ts_offset_s=pytest.approx(0.112))
     ]
     session.observe_pcm(silence)
     second = session._close_current_utterance(voice + silence)
 
     assert (first.utterance_id, second.utterance_id) == (1, 2)
-    assert second.end_offset_s == pytest.approx(0.17)
+    assert second.end_offset_s == pytest.approx(0.192)
     assert session.utterance_id == 3
     assert not session.in_utterance
     session.observe_provisional(
@@ -403,7 +404,7 @@ def test_ac_24_13_maybe_end_event_targets_only_the_live_closed_id() -> None:
     assert session.maybe_end_event(utterance_id=1) is None
     assert session.maybe_end_event(utterance_id=2) == UtteranceEnd(
         utterance_id=2,
-        ts_offset_s=pytest.approx(0.17),
+        ts_offset_s=pytest.approx(0.192),
     )
     assert session.maybe_end_event() is None
     assert session.utterance_id == 3
@@ -414,11 +415,11 @@ def test_ac_24_13_maybe_end_event_targets_only_the_live_closed_id() -> None:
     assert session.finalize_events(utterance_id=1) == [
         Final(
             utterance_id=1,
-            ts_offset_s=pytest.approx(0.06),
+            ts_offset_s=pytest.approx(0.08),
             text="pending",
             speaker="a",
         ),
-        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.06)),
+        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.08)),
     ]
     with pytest.raises(ValueError, match=r"unknown or expired utterance_id 1"):
         session.maybe_end_event(utterance_id=1)
@@ -429,11 +430,11 @@ def test_ac_24_13_maybe_end_event_targets_only_the_live_closed_id() -> None:
 def test_ac_24_13_observation_deduplication_is_per_utterance_id() -> None:
     """同じ確定の観測を再び適用しても通知を増やさない判定は、発話の ID ごとに行う。"""
     session = UtteranceBoundarySession(
-        silence_threshold_s=0.05,
-        voice_threshold=500 / 32768,
+        silence_threshold_s=0.064,
+        voice_rms_threshold=500 / 32768,
     )
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.1)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.096)
     observation = FinalObservation(text="same", source_offset_s=0.01)
 
     session.observe_pcm(voice)
@@ -457,11 +458,11 @@ def test_ac_24_13_observation_deduplication_is_per_utterance_id() -> None:
 def test_ac_24_16_closed_empty_decode_finalizes_as_start_then_end() -> None:
     """文字起こしで text にならなかった閉じた発話も開始と終了の通知で閉じる。"""
     session = UtteranceBoundarySession(
-        silence_threshold_s=0.05,
-        voice_threshold=500 / 32768,
+        silence_threshold_s=0.064,
+        voice_rms_threshold=500 / 32768,
     )
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.1)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.096)
 
     start = session.observe_pcm(voice)
     session.observe_pcm(silence)
@@ -469,7 +470,7 @@ def test_ac_24_16_closed_empty_decode_finalizes_as_start_then_end() -> None:
 
     assert start + session.finalize_events(utterance_id=1) == [
         UtteranceStart(utterance_id=1, ts_offset_s=0.0),
-        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.06)),
+        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.08)),
     ]
 
 
@@ -483,8 +484,8 @@ def test_ac_24_16_closed_empty_decode_finalizes_as_start_then_end() -> None:
 async def test_ac_24_3_to_8_16_18_pipeline_receives_while_serial_decode_drains_fifo() -> None:
     """非同期の音声を受け続け、元の音声の時刻を保つ text を発話順に返して全発話を閉じる。"""
     source = _ControlledPCM()
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.01)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.016)
     started = {utterance_id: asyncio.Event() for utterance_id in range(1, 4)}
     release = {utterance_id: asyncio.Event() for utterance_id in range(1, 4)}
     received: list[ClosedUtterance] = []
@@ -510,12 +511,12 @@ async def test_ac_24_3_to_8_16_18_pipeline_receives_while_serial_decode_drains_f
             )
         if utterance.utterance_id == 2:
             return ()
-        return (FinalObservation(text="gamma", source_offset_s=0.05),)
+        return (FinalObservation(text="gamma", source_offset_s=0.072),)
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.01,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.016,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
@@ -560,21 +561,21 @@ async def test_ac_24_3_to_8_16_18_pipeline_receives_while_serial_decode_drains_f
         voice + silence,
         voice,
     ]
-    assert [utterance.start_offset_s for utterance in received] == pytest.approx([0.0, 0.02, 0.04])
-    assert [utterance.end_offset_s for utterance in received] == pytest.approx([0.02, 0.04, 0.05])
+    assert [utterance.start_offset_s for utterance in received] == [0.0, 0.032, 0.064]
+    assert [utterance.end_offset_s for utterance in received] == [0.032, 0.064, 0.08]
     assert events == [
         UtteranceStart(utterance_id=1, ts_offset_s=0.0),
         Partial(utterance_id=1, ts_offset_s=0.015, text="alpha"),
         Final(utterance_id=1, ts_offset_s=0.016, text="alpha"),
         Partial(utterance_id=1, ts_offset_s=0.017, text="alpha beta"),
         Final(utterance_id=1, ts_offset_s=0.018, text="beta"),
-        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.02)),
-        UtteranceStart(utterance_id=2, ts_offset_s=pytest.approx(0.02)),
-        UtteranceEnd(utterance_id=2, ts_offset_s=pytest.approx(0.04)),
-        UtteranceStart(utterance_id=3, ts_offset_s=pytest.approx(0.04)),
-        Partial(utterance_id=3, ts_offset_s=0.05, text="gamma"),
-        Final(utterance_id=3, ts_offset_s=0.05, text="gamma"),
-        UtteranceEnd(utterance_id=3, ts_offset_s=pytest.approx(0.05)),
+        UtteranceEnd(utterance_id=1, ts_offset_s=0.032),
+        UtteranceStart(utterance_id=2, ts_offset_s=0.032),
+        UtteranceEnd(utterance_id=2, ts_offset_s=0.064),
+        UtteranceStart(utterance_id=3, ts_offset_s=0.064),
+        Partial(utterance_id=3, ts_offset_s=0.072, text="gamma"),
+        Final(utterance_id=3, ts_offset_s=0.072, text="gamma"),
+        UtteranceEnd(utterance_id=3, ts_offset_s=0.08),
     ]
     assert pipeline.emitted_events == len(events)
     assert pipeline.decoding_utterance_id is None
@@ -594,7 +595,7 @@ async def test_pipeline_filters_by_voiced_span_without_preroll_or_trailing_silen
     width = struct.calcsize(pack_format)
     prefix = struct.pack(pack_format, 0) * 12_800
     voice = struct.pack(pack_format, 600 if width == 2 else 0.05) * voice_samples
-    trailing_s = 0.6 if ending == "silence" else 0.05
+    trailing_s = 0.6 if ending == "silence" else 0.0
     trailing = struct.pack(pack_format, 0) * round(16_000 * trailing_s)
     received: list[ClosedUtterance] = []
 
@@ -615,17 +616,21 @@ async def test_pipeline_filters_by_voiced_span_without_preroll_or_trailing_silen
     )
     events = await _collect(pipeline.stream(source()))
 
-    expected_end_s = 0.8 + voice_samples / 16_000 + (0.4 if ending == "silence" else 0.05)
+    voiced_span_samples = (
+        ((voice_samples + 255) // 256) * 256 if ending == "silence" else voice_samples
+    )
+    closing_samples = voiced_span_samples + (6_400 if ending == "silence" else 0)
+    expected_end_s = (12_800 + closing_samples) / 16_000
     start = UtteranceStart(1, pytest.approx(0.5))
     end = UtteranceEnd(1, pytest.approx(expected_end_s))
-    if voice_samples < 3_200:
+    if voiced_span_samples < 3_200:
         assert received == []
         assert events == [start, end]
     else:
         assert received == [
             ClosedUtterance(
                 1,
-                prefix[-4_800 * width :] + voice + trailing,
+                prefix[-4_800 * width :] + (voice + trailing)[: closing_samples * width],
                 pytest.approx(0.5),
                 pytest.approx(expected_end_s),
             )
@@ -643,11 +648,11 @@ async def test_pipeline_filters_by_voiced_span_without_preroll_or_trailing_silen
 
 
 @pytest.mark.req("SP-LF-094")
-async def test_pipeline_min_voiced_span_includes_whole_chunks_and_internal_silence() -> None:
+async def test_pipeline_min_voiced_span_includes_whole_blocks_and_internal_silence() -> None:
     """声の部分は声と判定した塊の全長と、その間に挟まる無音を含めて数える。"""
-    first_voice = _pcm_chunk(600, duration_s=1 / 16_000) + _pcm_chunk(0, duration_s=0.0499375)
-    gap = _pcm_chunk(0, duration_s=0.1)
-    last_voice = _pcm_chunk(0, duration_s=0.0499375) + _pcm_chunk(600, duration_s=1 / 16_000)
+    first_voice = _pcm_chunk(600, duration_s=0.032)
+    gap = _pcm_chunk(0, duration_s=0.144)
+    last_voice = _pcm_chunk(600, duration_s=0.032)
     received: list[ClosedUtterance] = []
 
     async def decode(utterance: ClosedUtterance) -> Iterable[FinalObservation]:
@@ -666,12 +671,12 @@ async def test_pipeline_min_voiced_span_includes_whole_chunks_and_internal_silen
     )
     events = await _collect(pipeline.stream(source()))
 
-    assert received == [ClosedUtterance(1, first_voice + gap + last_voice, 0.0, pytest.approx(0.2))]
+    assert received == [ClosedUtterance(1, first_voice + gap + last_voice, 0.0, 0.208)]
     assert events == [
         UtteranceStart(1, 0.0),
         Partial(1, 0.2, "recognized"),
         Final(1, 0.2, "recognized"),
-        UtteranceEnd(1, pytest.approx(0.2)),
+        UtteranceEnd(1, 0.208),
     ]
 
 
@@ -691,12 +696,12 @@ async def test_pipeline_starts_short_voice_immediately_before_input_finishes() -
     )
     stream = pipeline.stream(source)
     reading = asyncio.create_task(anext(stream))
-    await source.send(_pcm_chunk(600, duration_s=0.05))
+    await source.send(_pcm_chunk(600, duration_s=0.064))
     try:
         assert await asyncio.wait_for(reading, timeout=1) == UtteranceStart(1, 0.0)
         assert received == []
         await source.finish()
-        assert await _collect(stream) == [UtteranceEnd(1, pytest.approx(0.05))]
+        assert await _collect(stream) == [UtteranceEnd(1, 0.064)]
         assert received == []
     finally:
         await stream.aclose()
@@ -710,9 +715,9 @@ async def test_pipeline_skips_short_voice_while_decode_waits_and_keeps_event_ord
     first_started = asyncio.Event()
     release_first = asyncio.Event()
     received: list[ClosedUtterance] = []
-    long_voice = _pcm_chunk(600, duration_s=0.25)
-    short_voice = _pcm_chunk(600, duration_s=0.05)
-    silence = _pcm_chunk(0, duration_s=0.5)
+    long_voice = _pcm_chunk(600, duration_s=0.256)
+    short_voice = _pcm_chunk(600, duration_s=0.064)
+    silence = _pcm_chunk(0, duration_s=0.512)
 
     async def decode(utterance: ClosedUtterance) -> Iterable[FinalObservation]:
         received.append(utterance)
@@ -742,18 +747,21 @@ async def test_pipeline_skips_short_voice_while_decode_waits_and_keeps_event_ord
         events = await collector
 
     assert [utterance.utterance_id for utterance in received] == [1, 3]
-    assert [utterance.pcm for utterance in received] == [long_voice + silence, long_voice]
+    assert [utterance.pcm for utterance in received] == [
+        long_voice + silence[: 6_400 * 2],
+        silence[6_400 * 2 :] + long_voice,
+    ]
     assert events == [
         UtteranceStart(1, 0.0),
         Partial(1, 0.0, "1"),
         Final(1, 0.0, "1"),
-        UtteranceEnd(1, pytest.approx(0.65)),
-        UtteranceStart(2, pytest.approx(0.75)),
-        UtteranceEnd(2, pytest.approx(1.2)),
-        UtteranceStart(3, pytest.approx(1.3)),
-        Partial(3, pytest.approx(1.3), "3"),
-        Final(3, pytest.approx(1.3), "3"),
-        UtteranceEnd(3, pytest.approx(1.55)),
+        UtteranceEnd(1, 0.656),
+        UtteranceStart(2, 0.656),
+        UtteranceEnd(2, 1.232),
+        UtteranceStart(3, 1.232),
+        Partial(3, 1.232, "3"),
+        Final(3, 1.232, "3"),
+        UtteranceEnd(3, 1.6),
     ]
     assert pipeline.pending_decode_utterances == 0
     assert pipeline.decoding_utterance_id is None
@@ -771,11 +779,12 @@ async def test_pipeline_keeps_exactly_300_ms_before_voice_for_each_pcm_format(
     pack_format = "<h" if input_format is EngineInputFormat.PCM_S16LE else "<f"
     width = struct.calcsize(pack_format)
     low_chunks = [
-        struct.pack(pack_format, value if width == 2 else value / 10_000) * 701
+        struct.pack(pack_format, value if width == 2 else value / 32768)
+        * (701 if value < 107 else 981)
         for value in range(100, 108)
     ]
     prefix = b"".join(low_chunks)
-    voice = struct.pack(pack_format, 600 if width == 2 else 0.05) * 400
+    voice = struct.pack(pack_format, 600 if width == 2 else 600 / 32768) * 400
     silence = struct.pack(pack_format, 0) * 1_600
     received: list[ClosedUtterance] = []
 
@@ -795,8 +804,8 @@ async def test_pipeline_keeps_exactly_300_ms_before_voice_for_each_pcm_format(
 
     assert len(received) == 1
     assert received[0].pcm == prefix[-4_800 * width :] + voice + silence
-    assert received[0].start_offset_s == pytest.approx(808 / 16_000)
-    assert events[0] == UtteranceStart(utterance_id=1, ts_offset_s=pytest.approx(808 / 16_000))
+    assert received[0].start_offset_s == 1088 / 16_000
+    assert events[0] == UtteranceStart(utterance_id=1, ts_offset_s=1088 / 16_000)
 
 
 @pytest.mark.req("SP-LF-035")
@@ -811,8 +820,8 @@ async def test_pipeline_uses_configured_preroll_on_sample_boundaries(
     """指定した長さだけ発話の前の音を取り、PCM と開始時刻を同じ標本境界に揃える。"""
     pack_format = "<h" if input_format is EngineInputFormat.PCM_S16LE else "<f"
     width = struct.calcsize(pack_format)
-    low = struct.pack(pack_format, 100 if width == 2 else 0.01) * 4_800
-    voice = struct.pack(pack_format, 600 if width == 2 else 0.05) * 400
+    low = struct.pack(pack_format, 100 if width == 2 else 100 / 32768) * 5_120
+    voice = struct.pack(pack_format, 600 if width == 2 else 600 / 32768) * 512
     silence = struct.pack(pack_format, 0) * 1_600
     received: list[ClosedUtterance] = []
 
@@ -826,7 +835,7 @@ async def test_pipeline_uses_configured_preroll_on_sample_boundaries(
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.05,
+            silence_threshold_s=0.064,
             preroll_s=preroll_s,
         ),
         decode_utterance=decode,
@@ -834,9 +843,11 @@ async def test_pipeline_uses_configured_preroll_on_sample_boundaries(
     )
     events = await _collect(pipeline.stream(source()))
 
-    expected_start_s = (4_800 - expected_samples) / 16_000
+    expected_start_s = (5_120 - expected_samples) / 16_000
     expected_pcm = (
-        low[-expected_samples * width :] + voice + silence if expected_samples else voice + silence
+        (low[-expected_samples * width :] if expected_samples else b"")
+        + voice
+        + silence[: 1024 * width]
     )
     assert len(received) == 1
     assert received[0].pcm == expected_pcm
@@ -846,11 +857,12 @@ async def test_pipeline_uses_configured_preroll_on_sample_boundaries(
 
 @pytest.mark.req("SP-LF-005")
 @pytest.mark.req("SP-LF-031")
+@pytest.mark.req("SP-LF-100")
 async def test_pipeline_uses_boundary_settings_for_voice_and_silence() -> None:
-    """一括 decode pipeline は渡した閾値で発話を始め、渡した無音の長さで閉じる。"""
-    low = _pcm_chunk(6_000, duration_s=0.02)
-    voice = _pcm_chunk(9_000, duration_s=0.02)
-    silence = _pcm_chunk(0, duration_s=0.12)
+    """一括 decode pipeline は RMS の閾値で始め、無音の長さを塊の境目に切り上げて閉じる。"""
+    low = _pcm_chunk(6_000, duration_s=0.032)
+    voice = _pcm_chunk(9_000, duration_s=0.032)
+    silence = _pcm_chunk(0, duration_s=0.128)
     received: list[ClosedUtterance] = []
 
     async def decode(utterance: ClosedUtterance) -> Iterable[FinalObservation]:
@@ -864,17 +876,17 @@ async def test_pipeline_uses_boundary_settings_for_voice_and_silence() -> None:
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
             silence_threshold_s=0.1,
-            voice_threshold=0.25,
+            voice_rms_threshold=0.25,
             preroll_s=0,
         ),
         decode_utterance=decode,
     )
     events = await _collect(pipeline.stream(source()))
 
-    assert [utterance.pcm for utterance in received] == [voice + silence]
+    assert [utterance.pcm for utterance in received] == [voice + silence[: 1792 * 2]]
     assert events == [
-        UtteranceStart(utterance_id=1, ts_offset_s=pytest.approx(0.02)),
-        UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.14)),
+        UtteranceStart(utterance_id=1, ts_offset_s=0.032),
+        UtteranceEnd(utterance_id=1, ts_offset_s=0.176),
     ]
 
 
@@ -882,9 +894,9 @@ async def test_pipeline_uses_boundary_settings_for_voice_and_silence() -> None:
 @pytest.mark.req("SP-LF-029")
 async def test_pipeline_limits_preroll_to_input_start() -> None:
     """入力開始から 300 ms 未満で発話が始まる時、発話の始まりの前に取る音と開始時刻は入力の始まりで止まる。"""
-    low = _pcm_chunk(300, duration_s=0.1)
-    voice = _pcm_chunk(600, duration_s=0.02)
-    silence = _pcm_chunk(0, duration_s=0.1)
+    low = _pcm_chunk(300, duration_s=0.096)
+    voice = _pcm_chunk(600, duration_s=0.032)
+    silence = _pcm_chunk(0, duration_s=0.096)
     received: list[ClosedUtterance] = []
 
     async def decode(utterance: ClosedUtterance) -> Iterable[FinalObservation]:
@@ -897,15 +909,15 @@ async def test_pipeline_limits_preroll_to_input_start() -> None:
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.05,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.064,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     events = await _collect(pipeline.stream(source()))
 
     assert len(received) == 1
-    assert received[0].pcm == low + voice + silence
+    assert received[0].pcm == low + voice + silence[: 1024 * 2]
     assert received[0].start_offset_s == 0.0
     assert events[0] == UtteranceStart(utterance_id=1, ts_offset_s=0.0)
 
@@ -913,12 +925,12 @@ async def test_pipeline_limits_preroll_to_input_start() -> None:
 @pytest.mark.req("SP-LF-034")
 @pytest.mark.req("SP-LF-029")
 async def test_pipeline_does_not_reuse_pcm_from_a_closed_utterance() -> None:
-    """次の発話の始まりの前に取る音は前の発話の音の末尾から始まり、二つの発話の音は重ならない。"""
-    first_voice = _pcm_chunk(600, duration_s=0.02)
-    long_silence = _pcm_chunk(0, duration_s=0.5)
-    low = _pcm_chunk(300, duration_s=0.05)
-    second_voice = _pcm_chunk(700, duration_s=0.02)
-    short_silence = _pcm_chunk(0, duration_s=0.05)
+    """次の発話の前の音は前の発話の末尾以後から取り、二つの発話の音は重ならない。"""
+    first_voice = _pcm_chunk(600, duration_s=0.032)
+    long_silence = _pcm_chunk(0, duration_s=0.512)
+    low = _pcm_chunk(300, duration_s=0.064)
+    second_voice = _pcm_chunk(700, duration_s=0.032)
+    short_silence = _pcm_chunk(0, duration_s=0.064)
     received: list[ClosedUtterance] = []
 
     async def decode(utterance: ClosedUtterance) -> Iterable[FinalObservation]:
@@ -931,21 +943,21 @@ async def test_pipeline_does_not_reuse_pcm_from_a_closed_utterance() -> None:
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.05,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.064,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     events = await _collect(pipeline.stream(source()))
 
     assert [utterance.pcm for utterance in received] == [
-        first_voice + long_silence,
-        low + second_voice + short_silence,
+        first_voice + long_silence[: 1024 * 2],
+        long_silence[-3776 * 2 :] + low + second_voice + short_silence,
     ]
     first_pcm_end_s = received[0].start_offset_s + len(received[0].pcm) / 2 / 16_000
-    assert events[1] == UtteranceEnd(utterance_id=1, ts_offset_s=pytest.approx(0.07))
-    assert events[2] == UtteranceStart(utterance_id=2, ts_offset_s=pytest.approx(0.52))
-    assert received[1].start_offset_s == pytest.approx(first_pcm_end_s)
+    assert events[1] == UtteranceEnd(utterance_id=1, ts_offset_s=0.096)
+    assert events[2] == UtteranceStart(utterance_id=2, ts_offset_s=0.308)
+    assert received[1].start_offset_s >= first_pcm_end_s
     assert received[1].start_offset_s == pytest.approx(events[2].ts_offset_s)
 
 
@@ -983,7 +995,7 @@ async def test_ac_24_11_pipeline_validates_before_advancing_any_state(
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
             silence_threshold_s=1 / 16_000,
-            voice_threshold=0.5,
+            voice_rms_threshold=0.5,
         ),
         decode_utterance=decode,
         input_format=input_format,
@@ -1004,14 +1016,14 @@ async def test_ac_24_11_pipeline_validates_before_advancing_any_state(
     assert decoded == []
 
     async def valid_source() -> AsyncIterator[bytes]:
-        yield voice
-        yield silence
+        yield voice * 256
+        yield silence * 256
 
     events = await _collect(pipeline.stream(valid_source()))
 
     assert [type(event) for event in events] == [UtteranceStart, UtteranceEnd]
     assert len(decoded) == 1
-    assert decoded[0].pcm == voice + silence
+    assert decoded[0].pcm == voice * 256 + silence * 256
     assert pipeline.processed_pcm_chunks == 2
 
 
@@ -1032,14 +1044,14 @@ async def test_ac_24_12_18_overlap_is_rejected_and_sequential_progress_accumulat
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.01,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.016,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     first_collector = asyncio.create_task(_collect(pipeline.stream(first_source)))
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.01)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.016)
     await first_source.send(voice)
     await first_source.send(silence)
     await first_started.wait()
@@ -1119,14 +1131,14 @@ async def test_ac_24_9_decode_failure_preserves_identity_and_stops_pending_work(
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.01,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.016,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     collector = asyncio.create_task(_collect(pipeline.stream(source)))
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.01)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.016)
 
     await source.send(voice)
     await source.send(silence)
@@ -1174,14 +1186,14 @@ async def test_ac_24_10_17_input_failure_waits_for_callback_and_keeps_first_caus
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.01,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.016,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     collector = asyncio.create_task(_collect(pipeline.stream(source)))
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.01)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.016)
     await source.send(voice)
     await source.send(silence)
     await callback_started.wait()
@@ -1243,15 +1255,15 @@ async def test_ac_24_14_17_consumer_close_waits_for_callback_before_reuse() -> N
 
     pipeline = UtteranceDecodePipeline(
         boundary_settings=listenflow.UtteranceBoundarySettings(
-            silence_threshold_s=0.01,
-            voice_threshold=500 / 32768,
+            silence_threshold_s=0.016,
+            voice_rms_threshold=500 / 32768,
         ),
         decode_utterance=decode,
     )
     stream = pipeline.stream(source)
     first_event_task = asyncio.create_task(anext(stream))
-    voice = _pcm_chunk(600, duration_s=0.01)
-    silence = _pcm_chunk(0, duration_s=0.01)
+    voice = _pcm_chunk(600, duration_s=0.016)
+    silence = _pcm_chunk(0, duration_s=0.016)
     await source.send(voice)
     assert await first_event_task == UtteranceStart(utterance_id=1, ts_offset_s=0.0)
     await source.send(silence)
@@ -1302,19 +1314,19 @@ async def test_progress_tracks_silent_pcm_and_empty_decode_without_event_reading
         return ()
 
     pipeline = UtteranceDecodePipeline(
-        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.01),
+        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.016),
         decode_utterance=decode,
         on_progress=(lambda: progress.append(1)) if external_owner else None,
     )
     stream = pipeline.stream(source)
     reading = asyncio.create_task(anext(stream))
-    await source.send(_pcm_chunk(0, duration_s=0.01))
+    await source.send(_pcm_chunk(0, duration_s=0.016))
     assert not reading.done()
     silent_time = pipeline.last_progress_monotonic_s
     assert (silent_time is None) is external_owner
     if external_owner:
         assert progress == [1]
-    await source.send(_pcm_chunk(600, duration_s=0.01))
+    await source.send(_pcm_chunk(600, duration_s=0.016))
     assert isinstance(await reading, UtteranceStart)
     await source.finish()
     await decoded.wait()
@@ -1325,7 +1337,7 @@ async def test_progress_tracks_silent_pcm_and_empty_decode_without_event_reading
         assert len(progress) == 3
     else:
         assert finished_time > silent_time
-    assert await _collect(stream) == [UtteranceEnd(1, 0.02)]
+    assert await _collect(stream) == [UtteranceEnd(1, 0.032)]
     assert pipeline.last_progress_monotonic_s == finished_time
     if external_owner:
         assert len(progress) == 3
@@ -1349,12 +1361,12 @@ async def test_input_failure_cancels_a_callback_that_stops_immediately() -> None
             raise
 
     pipeline = UtteranceDecodePipeline(
-        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.01),
+        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.016),
         decode_utterance=decode,
     )
     collecting = asyncio.create_task(_collect(pipeline.stream(source)))
-    await source.send(_pcm_chunk(600, duration_s=0.01))
-    await source.send(_pcm_chunk(0, duration_s=0.01))
+    await source.send(_pcm_chunk(600, duration_s=0.016))
+    await source.send(_pcm_chunk(0, duration_s=0.016))
     await started.wait()
     await source.fail(failure)
     with pytest.raises(OSError) as caught:
@@ -1386,12 +1398,12 @@ async def test_repeated_consumer_cancellation_waits_for_decode_cleanup() -> None
         return ()
 
     pipeline = UtteranceDecodePipeline(
-        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.01),
+        boundary_settings=listenflow.UtteranceBoundarySettings(silence_threshold_s=0.016),
         decode_utterance=decode,
     )
     collecting = asyncio.create_task(_collect(pipeline.stream(source)))
-    await source.send(_pcm_chunk(600, duration_s=0.01))
-    await source.send(_pcm_chunk(0, duration_s=0.01))
+    await source.send(_pcm_chunk(600, duration_s=0.016))
+    await source.send(_pcm_chunk(0, duration_s=0.016))
     await started.wait()
     collecting.cancel()
     await cancelled.wait()
@@ -1472,10 +1484,10 @@ async def test_pipeline_engine_keeps_progress_in_the_parent_while_consumer_pause
     source = _ControlledPCM()
     stream = engine.stream(source)
     first = asyncio.create_task(anext(stream))
-    await source.send(_pcm_chunk(0, duration_s=0.01))
+    await source.send(_pcm_chunk(0, duration_s=0.016))
     silence_time = engine.health().last_progress_monotonic_s
     assert silence_time is not None
-    await source.send(_pcm_chunk(600, duration_s=0.01))
+    await source.send(_pcm_chunk(600, duration_s=0.016))
     assert isinstance(await first, UtteranceStart)
     await source.finish()
     await decoded.wait()
@@ -1484,6 +1496,6 @@ async def test_pipeline_engine_keeps_progress_in_the_parent_while_consumer_pause
     assert decode_time > silence_time
     assert engine.pipeline.last_progress_monotonic_s is None
     assert engine.health().processed_pcm_chunks == 2
-    assert await _collect(stream) == [UtteranceEnd(1, 0.02)]
+    assert await _collect(stream) == [UtteranceEnd(1, 0.032)]
     assert engine.health().last_progress_monotonic_s == decode_time
     await engine.aclose()

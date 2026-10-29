@@ -4,10 +4,11 @@ import asyncio
 import math
 import struct
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from collections import deque
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import wraps
 from pathlib import Path
 
 from listenflow._async import cancel_once, finish
@@ -15,7 +16,12 @@ from listenflow.events import Final, Partial, TranscriptEvent, UtteranceEnd, Utt
 
 
 SAMPLE_RATE_HZ = 16_000
-DEFAULT_VOICE_THRESHOLD = 500 / 32768
+_VOICE_BLOCK_SAMPLES = 256
+_VOICE_RMS_MIGRATION_MESSAGE = (
+    "voice_threshold and positional voice thresholds have been removed; set "
+    "voice_rms_threshold as a keyword in normalized full-scale RMS units "
+    "instead of reusing a peak amplitude"
+)
 
 
 class EngineTransport(StrEnum):
@@ -64,34 +70,66 @@ def validate_input_format(
     return input_format
 
 
-def validate_voice_threshold(voice_threshold: object) -> float:
+def _validate_voice_rms_threshold(voice_rms_threshold: object) -> float:
     if (
-        type(voice_threshold) is not float
-        or not math.isfinite(voice_threshold)
-        or not 0.0 <= voice_threshold <= 1.0
+        type(voice_rms_threshold) is not float
+        or not math.isfinite(voice_rms_threshold)
+        or not 0.0 < voice_rms_threshold <= 1.0
     ):
         raise ValueError(
-            "voice_threshold must be a finite float in normalized full-scale "
-            "range [0.0, 1.0]; legacy int16 amplitude 500 is approximately "
-            "0.01526 (500 / 32768)"
+            "voice_rms_threshold must be a finite float in normalized full-scale "
+            "RMS range (0.0, 1.0]"
         )
-    return voice_threshold
+    return voice_rms_threshold
 
 
-@dataclass(frozen=True, slots=True)
+def _reject_legacy_voice_threshold[**P, T](function: Callable[P, T]) -> Callable[P, T]:
+    @wraps(function)
+    def checked(*args: P.args, **kwargs: P.kwargs) -> T:
+        if "voice_threshold" in kwargs:
+            raise TypeError(_VOICE_RMS_MIGRATION_MESSAGE)
+        return function(*args, **kwargs)
+
+    return checked
+
+
+def _rms_threshold_constructor[T](cls: type[T]) -> type[T]:
+    initializer = cls.__init__
+
+    @wraps(initializer)
+    def checked(self: T, *args: object, **kwargs: object) -> None:
+        if len(args) > 1:
+            raise TypeError(_VOICE_RMS_MIGRATION_MESSAGE)
+        initializer(self, *args, **kwargs)
+
+    cls.__init__ = _reject_legacy_voice_threshold(checked)
+    return cls
+
+
+@_rms_threshold_constructor
+@dataclass(frozen=True, slots=True, kw_only=True)
 class UtteranceBoundarySettings:
     """Configure voice detection and complete-utterance decoding.
 
     ``min_voiced_s`` is the minimum voiced span to decode, in finite, non-negative
     seconds. It defaults to ``0.0``, which decodes every utterance. The span runs
-    from the start of the first voiced chunk to the end of the last voiced chunk,
+    from the start of the first voiced block to the end of the last voiced block,
     excluding preroll and trailing silence. Shorter utterances emit only
     ``UtteranceStart`` and ``UtteranceEnd``, including at end of input; their start
-    event is emitted as soon as the first voiced chunk arrives.
+    event is emitted as soon as the first voiced block is available.
+
+    ``voice_rms_threshold`` defaults to ``0.01`` in normalized full-scale RMS
+    units and must be a finite float greater than zero and at most one. Voice is
+    measured over 256-sample (16 ms) blocks at 16 kHz. ``silence_threshold_s`` is
+    rounded up to a block boundary. The final short block uses its actual sample
+    count, without zero padding. The removed ``voice_threshold`` keyword raises
+    TypeError with migration guidance; peak values are not converted to RMS.
+    Only ``silence_threshold_s`` can be positional; all other fields require
+    keywords so an old positional peak threshold cannot be reused silently.
     """
 
-    silence_threshold_s: float = 0.8
-    voice_threshold: float = DEFAULT_VOICE_THRESHOLD
+    silence_threshold_s: float = field(default=0.8, kw_only=False)
+    voice_rms_threshold: float = 0.01
     preroll_s: float = 0.3
     min_voiced_s: float = 0.0
 
@@ -117,7 +155,7 @@ class UtteranceBoundarySettings:
                     f"{name} must produce a finite sample count at {SAMPLE_RATE_HZ} Hz"
                 )
             object.__setattr__(self, name, seconds)
-        validate_voice_threshold(self.voice_threshold)
+        _validate_voice_rms_threshold(self.voice_rms_threshold)
 
 
 def validate_pcm_chunk(chunk: bytes, *, input_format: EngineInputFormat) -> None:
@@ -133,28 +171,68 @@ def _normalized_samples(
     chunk: bytes,
     *,
     input_format: EngineInputFormat,
-) -> object:
+) -> Iterator[float]:
     if input_format is EngineInputFormat.PCM_S16LE:
         return (sample[0] / 32768.0 for sample in struct.iter_unpack("<h", chunk))
     return (sample[0] for sample in struct.iter_unpack("<f", chunk))
 
 
+class _PCMBlockBuffer:
+    def __init__(self, input_format: EngineInputFormat) -> None:
+        self._input_format = input_format
+        self._block_bytes = _VOICE_BLOCK_SAMPLES * _SAMPLE_WIDTH_BYTES[input_format]
+        self._pending = b""
+
+    def feed(self, chunk: bytes, *, final: bool = False) -> Iterator[bytes]:
+        validate_pcm_chunk(chunk, input_format=self._input_format)
+        pcm = self._pending + chunk
+        complete = len(pcm) if final else len(pcm) // self._block_bytes * self._block_bytes
+        self._pending = pcm[complete:]
+        for start in range(0, complete, self._block_bytes):
+            yield pcm[start : min(start + self._block_bytes, complete)]
+
+
+def _block_has_voice(
+    block: bytes, *, input_format: EngineInputFormat, voice_rms_threshold: float
+) -> bool:
+    sample_count = len(block) // _SAMPLE_WIDTH_BYTES[input_format]
+    if sample_count == 0:
+        return False
+    mean_square = (
+        math.fsum(
+            sample * sample for sample in _normalized_samples(block, input_format=input_format)
+        )
+        / sample_count
+    )
+    return math.sqrt(mean_square) >= voice_rms_threshold
+
+
+@_reject_legacy_voice_threshold
 def has_voice(
     chunk: bytes,
     *,
     input_format: EngineInputFormat,
-    voice_threshold: float,
+    voice_rms_threshold: float,
 ) -> bool:
+    """Return whether any 256-sample block reaches the normalized RMS threshold.
+
+    This stateless helper starts blocks at the beginning of this call's chunk
+    and measures its final short block using the actual sample count, without
+    zero padding. Use UtteranceBoundarySession or UtteranceDecodePipeline to
+    preserve block alignment across chunks of one input stream. s16le samples
+    are divided by 32768; f32le samples are used as supplied. The threshold is a
+    finite float in (0.0, 1.0]. The removed voice_threshold keyword raises
+    TypeError; set voice_rms_threshold in normalized full-scale RMS units.
+    """
     input_format = validate_input_format(
         input_format,
         target="has_voice",
         accepted=_RAW_PCM_INPUT_FORMATS,
     )
-    voice_threshold = validate_voice_threshold(voice_threshold)
-    validate_pcm_chunk(chunk, input_format=input_format)
+    voice_rms_threshold = _validate_voice_rms_threshold(voice_rms_threshold)
     return any(
-        abs(sample) >= voice_threshold
-        for sample in _normalized_samples(chunk, input_format=input_format)
+        _block_has_voice(block, input_format=input_format, voice_rms_threshold=voice_rms_threshold)
+        for block in _PCMBlockBuffer(input_format).feed(chunk, final=True)
     )
 
 
@@ -274,10 +352,34 @@ class _UtteranceEventState:
     end_offset_s: float | None
 
 
-@dataclass(slots=True)
+@_rms_threshold_constructor
+@dataclass(slots=True, kw_only=True)
 class UtteranceBoundarySession:
-    silence_threshold_s: float
-    voice_threshold: float
+    """Measure aligned RMS blocks and correlate streaming recognition events.
+
+    PCM is measured in 256-sample blocks from the start of input. Incomplete
+    blocks carry over between chunks, including empty chunks. Silence closes at
+    the first block boundary at or beyond silence_threshold_s. Call observe_pcm,
+    feed recognition observations, then call maybe_end_event to close an
+    utterance. This direct path leaves closure timing to the caller; use
+    UtteranceDecodePipeline for chunk-independent splitting of multiple
+    utterances within a single chunk.
+
+    finish_input returns None and measures the final short block without zero
+    padding. Drain finalize_events afterward: if that block starts an utterance,
+    its UtteranceStart is returned there before its UtteranceEnd. A non-empty
+    recognition observation arriving first instead returns the held start before
+    its text events. maybe_end_event waits while the start is held. At input end,
+    an open utterance closes at the actual input duration without adding silence;
+    a provisional observation timestamp beyond input end remains a lower bound.
+
+    Only silence_threshold_s can be positional. Set voice_rms_threshold and all
+    remaining fields by keyword; removed peak keywords and positional threshold
+    values raise TypeError with normalized full-scale RMS configuration guidance.
+    """
+
+    silence_threshold_s: float = field(kw_only=False)
+    voice_rms_threshold: float
     input_format: EngineInputFormat = EngineInputFormat.PCM_S16LE
     utterance_id: int = 1
     input_offset_s: float = 0.0
@@ -312,6 +414,11 @@ class UtteranceBoundarySession:
         init=False,
         repr=False,
     )
+    _pcm_blocks: _PCMBlockBuffer = field(init=False, repr=False)
+    _processed_samples: int = field(default=0, init=False, repr=False)
+    _pending_input_events: list[TranscriptEvent] = field(
+        default_factory=list, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         validate_input_format(
@@ -319,7 +426,9 @@ class UtteranceBoundarySession:
             target="UtteranceBoundarySession",
             accepted=_RAW_PCM_INPUT_FORMATS,
         )
-        self.voice_threshold = validate_voice_threshold(self.voice_threshold)
+        self.voice_rms_threshold = _validate_voice_rms_threshold(self.voice_rms_threshold)
+        self._pcm_blocks = _PCMBlockBuffer(self.input_format)
+        self._processed_samples = round(self.input_offset_s * SAMPLE_RATE_HZ)
 
     def __setattr__(self, name: str, value: object) -> None:
         if name == "input_format":
@@ -338,14 +447,24 @@ class UtteranceBoundarySession:
 
     def observe_pcm(self, chunk: bytes) -> list[TranscriptEvent]:
         validate_pcm_chunk(chunk, input_format=self.input_format)
-        start_s = self.input_offset_s
-        duration_s = (len(chunk) // _SAMPLE_WIDTH_BYTES[self.input_format]) / SAMPLE_RATE_HZ
-        end_s = start_s + duration_s
+        input_end_samples = round(self.input_offset_s * SAMPLE_RATE_HZ) + (
+            len(chunk) // _SAMPLE_WIDTH_BYTES[self.input_format]
+        )
         events: list[TranscriptEvent] = []
-        if has_voice(
-            chunk,
+        for block in self._pcm_blocks.feed(chunk):
+            events.extend(self._observe_pcm_block(block))
+        self.input_offset_s = input_end_samples / SAMPLE_RATE_HZ
+        return events
+
+    def _observe_pcm_block(self, block: bytes) -> list[TranscriptEvent]:
+        start_s = self._processed_samples / SAMPLE_RATE_HZ
+        self._processed_samples += len(block) // _SAMPLE_WIDTH_BYTES[self.input_format]
+        end_s = self._processed_samples / SAMPLE_RATE_HZ
+        events: list[TranscriptEvent] = []
+        if _block_has_voice(
+            block,
             input_format=self.input_format,
-            voice_threshold=self.voice_threshold,
+            voice_rms_threshold=self.voice_rms_threshold,
         ):
             self.last_voice_offset_s = end_s
             self.pending_end_ts = None
@@ -362,9 +481,12 @@ class UtteranceBoundarySession:
         elif (
             self.in_utterance
             and self.last_voice_offset_s is not None
-            and end_s - self.last_voice_offset_s >= self.silence_threshold_s
+            and self.pending_end_ts is None
+            and (self._processed_samples - round(self.last_voice_offset_s * SAMPLE_RATE_HZ))
+            / SAMPLE_RATE_HZ
+            >= self.silence_threshold_s
         ):
-            self.pending_end_ts = self.last_voice_offset_s + self.silence_threshold_s
+            self.pending_end_ts = end_s
         self.input_offset_s = end_s
         return events
 
@@ -447,14 +569,11 @@ class UtteranceBoundarySession:
         return events
 
     def finish_input(self) -> None:
+        for block in self._pcm_blocks.feed(b"", final=True):
+            self._pending_input_events.extend(self._observe_pcm_block(block))
         self.input_finished = True
         if self.in_utterance and self.pending_end_ts is None:
             fallback_end = self.input_offset_s
-            if self.last_voice_offset_s is not None:
-                fallback_end = max(
-                    fallback_end,
-                    self.last_voice_offset_s + self.silence_threshold_s,
-                )
             if self.last_partial_ts_offset_s is not None:
                 fallback_end = max(fallback_end, self.last_partial_ts_offset_s)
             self.pending_end_ts = fallback_end
@@ -475,6 +594,9 @@ class UtteranceBoundarySession:
             return []
 
         events: list[TranscriptEvent] = []
+        if is_current:
+            events.extend(self._pending_input_events)
+            self._pending_input_events.clear()
         if self._state_has_unfinalized_provisional(state):
             events.append(
                 Final(
@@ -504,6 +626,8 @@ class UtteranceBoundarySession:
         utterance_id: int | None = None,
     ) -> UtteranceEnd | None:
         state, is_current = self._event_state(utterance_id)
+        if is_current and self._pending_input_events:
+            return None
         event = self._maybe_end_state(state)
         if event is None:
             self._store_event_state(state, is_current=is_current)
@@ -653,6 +777,7 @@ class UtteranceBoundarySession:
         self.last_partial_ts_offset_s = None
         self.last_partial_speaker = None
         self._current_start_offset_s = None
+        self._pending_input_events.clear()
 
     def _ensure_state_started(
         self,
@@ -666,15 +791,19 @@ class UtteranceBoundarySession:
             state.end_offset_s = max(self.input_offset_s, source_offset_s)
         if state.start_offset_s is None:
             state.start_offset_s = source_offset_s
+        events: list[TranscriptEvent] = []
+        if is_current:
+            events, self._pending_input_events = self._pending_input_events, []
         if state.emitted_start:
-            return []
+            return events
         state.emitted_start = True
-        return [
+        events.append(
             UtteranceStart(
                 utterance_id=state.utterance_id,
                 ts_offset_s=source_offset_s,
             )
-        ]
+        )
+        return events
 
     @staticmethod
     def _state_has_unfinalized_provisional(state: _UtteranceEventState) -> bool:
@@ -748,7 +877,7 @@ class UtteranceDecodePipeline:
         event_buffers: dict[int, deque[TranscriptEvent]] = {}
         session = UtteranceBoundarySession(
             silence_threshold_s=self._boundary_settings.silence_threshold_s,
-            voice_threshold=self._boundary_settings.voice_threshold,
+            voice_rms_threshold=self._boundary_settings.voice_rms_threshold,
             input_format=self._input_format,
         )
         next_emit_utterance_id = 1
@@ -814,6 +943,36 @@ class UtteranceDecodePipeline:
             preroll_pcm = bytearray()
             sample_width = _SAMPLE_WIDTH_BYTES[self._input_format]
             preroll_bytes = round(self._boundary_settings.preroll_s * SAMPLE_RATE_HZ) * sample_width
+
+            def receive_block(block: bytes) -> None:
+                nonlocal current_pcm, voice_start_s, preroll_pcm
+                was_in_utterance = session.in_utterance
+                block_start_s = session.input_offset_s
+                events = session._observe_pcm_block(block)
+                if not was_in_utterance and session.in_utterance:
+                    voice_start_s = block_start_s
+                    start_samples = round(block_start_s * SAMPLE_RATE_HZ) - (
+                        len(preroll_pcm) // sample_width
+                    )
+                    start_offset_s = start_samples / SAMPLE_RATE_HZ
+                    session._current_start_offset_s = start_offset_s
+                    events[0] = UtteranceStart(session.utterance_id, start_offset_s)
+                    current_pcm = preroll_pcm
+                    preroll_pcm = bytearray()
+                if session.in_utterance:
+                    if current_pcm is None:
+                        current_pcm = bytearray()
+                    current_pcm.extend(block)
+                elif preroll_bytes != 0:
+                    preroll_pcm.extend(block)
+                    del preroll_pcm[:-preroll_bytes]
+                queue_events(events)
+                if session.in_utterance and session.pending_end_ts is not None:
+                    if current_pcm is None:
+                        raise RuntimeError("active utterance has no PCM buffer")
+                    close_current_utterance(bytes(current_pcm), voice_start_s=voice_start_s)
+                    current_pcm = None
+
             try:
                 async for chunk in pcm_chunks:
                     if stop_requested:
@@ -834,37 +993,16 @@ class UtteranceDecodePipeline:
                         self._record_progress()
                         self._processed_pcm_chunks += 1
                         continue
-                    was_in_utterance = session.in_utterance
-                    chunk_start_s = session.input_offset_s
-                    events = session.observe_pcm(chunk)
+                    for block in session._pcm_blocks.feed(chunk):
+                        receive_block(block)
                     self._record_progress()
                     self._processed_pcm_chunks += 1
-                    if not was_in_utterance and session.in_utterance:
-                        voice_start_s = chunk_start_s
-                        start_offset_s = max(
-                            0.0,
-                            chunk_start_s - len(preroll_pcm) / sample_width / SAMPLE_RATE_HZ,
-                        )
-                        session._current_start_offset_s = start_offset_s
-                        events[0] = UtteranceStart(session.utterance_id, start_offset_s)
-                        current_pcm = preroll_pcm
-                        preroll_pcm = bytearray()
-                    if session.in_utterance:
-                        if current_pcm is None:
-                            current_pcm = bytearray()
-                        current_pcm.extend(chunk)
-                    elif preroll_bytes != 0:
-                        preroll_pcm.extend(chunk)
-                        del preroll_pcm[:-preroll_bytes]
-                    queue_events(events)
-                    if session.in_utterance and session.pending_end_ts is not None:
-                        if current_pcm is None:
-                            raise RuntimeError("active utterance has no PCM buffer")
-                        close_current_utterance(bytes(current_pcm), voice_start_s=voice_start_s)
-                        current_pcm = None
 
                 if stop_requested:
                     return
+                if segmentation is Segmentation.AUTO:
+                    for block in session._pcm_blocks.feed(b"", final=True):
+                        receive_block(block)
                 session.finish_input()
                 if session.in_utterance:
                     if current_pcm is None:

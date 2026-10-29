@@ -284,6 +284,7 @@ async def test_retained_audio_is_transcribed_without_gaps_or_overlap_and_keeps_p
 
 @pytest.mark.req("SP-LF-094")
 @pytest.mark.req("SP-LF-098")
+@pytest.mark.req("SP-LF-100")
 async def test_single_utterance_bypasses_voice_detection_and_minimum_voiced_span() -> None:
     """一発話の指定は短い声と声の閾値未満の音も回し、AUTO は短い声を回さず境界で閉じる。"""
     voice = _pcm(1000, 1600, lf.EngineInputFormat.PCM_S16LE)
@@ -293,9 +294,9 @@ async def test_single_utterance_bypasses_voice_detection_and_minimum_voiced_span
         events = [event async for event in engine.stream(_chunks([voice, silence, voice, silence]))]
         assert events == [
             lf.UtteranceStart(1, 0.0),
-            lf.UtteranceEnd(1, pytest.approx(0.3)),
-            lf.UtteranceStart(2, pytest.approx(0.4)),
-            lf.UtteranceEnd(2, pytest.approx(0.7)),
+            lf.UtteranceEnd(1, 0.32),
+            lf.UtteranceStart(2, 0.32),
+            lf.UtteranceEnd(2, 0.72),
         ]
         assert engine.decoded == []
         assert await lf.transcribe_utterance(engine, voice) == [

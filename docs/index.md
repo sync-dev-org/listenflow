@@ -185,22 +185,35 @@ unchanged. See the [engine hook example](api/engine.md#supporting-one-caller-sel
 
 ## Utterance boundaries
 
-`has_voice` checks samples against a normalized amplitude threshold. Supply a finite `float` in
-the range `0.0` to `1.0`. The helper checks amplitude rather than a learned voice activity model.
+Voice detection measures RMS over fixed 256-sample (16 ms) blocks at 16 kHz. A block is voiced
+when its RMS reaches `voice_rms_threshold`, which defaults to `0.01` (about -40 dBFS). This value
+is normalized full-scale RMS amplitude: s16le samples are divided by 32768, and f32le values are
+used directly. Supply a finite `float` greater than `0.0` and at most `1.0`.
+
+`has_voice(chunk, *, input_format=..., voice_rms_threshold=...)` returns true when any block
+in its chunk is voiced. This helper is stateless: each call starts its own blocks. A final block
+shorter than 256 samples uses its actual sample count, without zero padding. Sessions and pipelines
+instead retain incomplete blocks across chunks, so chunk sizes and empty chunks do not change
+the stream's block alignment or voice decisions.
 
 `UtteranceBoundarySession` tracks audio offsets and converts `ProvisionalObservation` and
 `FinalObservation` records into transcript events. Call `observe_pcm()` as audio arrives, feed the
 recognizer's observations, and call `finish_input()` followed by `finalize_events()` at the end of
-input. This path fits engines that already stream recognition observations.
+input. `finish_input()` returns `None`; if the last short block starts an utterance, its start
+event is returned by `finalize_events()` before its end event. If a non-empty recognition observation
+arrives first, its returned events begin with that held start. `maybe_end_event()` waits until
+the start has been delivered. This direct path fits engines that
+already stream recognition observations and leaves closing an utterance to `maybe_end_event()`.
+Use the pipeline for chunk-independent segmentation when a chunk can contain several utterances.
 
 `UtteranceDecodePipeline` fits engines that decode complete utterances. Configure silence, voice
 threshold, preroll, and the minimum voiced span with `UtteranceBoundarySettings`, and supply an async
 decoding callback. In AUTO mode, `min_voiced_s` defaults to `0.0`, which decodes every utterance.
 A positive value skips decoding utterances whose voiced span is shorter than that many seconds, including utterances
-closed at end of input. The span runs from the beginning of the first voiced chunk to the end of the
-last voiced chunk, including any silence between them, and excludes preroll and trailing silence.
+closed at end of input. The span runs from the beginning of the first voiced block to the end of the
+last voiced block, including any silence between them, and excludes preroll and trailing silence.
 Skipped utterances emit only `UtteranceStart` and `UtteranceEnd`; the start event still arrives as
-soon as the first voiced chunk is received. The example below uses a minimum voiced span of 0.2
+soon as the first voiced block is available. The example below uses a minimum voiced span of 0.2
 seconds:
 
 ```python
@@ -225,7 +238,7 @@ def make_pipeline(
     return UtteranceDecodePipeline(
         boundary_settings=UtteranceBoundarySettings(
             silence_threshold_s=0.8,
-            voice_threshold=500 / 32768,
+            voice_rms_threshold=0.01,
             preroll_s=0.3,
             min_voiced_s=0.2,
         ),
@@ -233,6 +246,19 @@ def make_pipeline(
         input_format=EngineInputFormat.PCM_S16LE,
     )
 ```
+
+`silence_threshold_s` counts subthreshold audio after the last voiced block. The silence duration
+is rounded up to blocks: `0.8` seconds closes after exactly 50 silent blocks, while `0.05` seconds
+closes after four blocks (0.064 seconds). Audio passed to decoding ends at that closing block.
+At end of input, an open utterance closes at the actual input end without adding silence.
+
+The old peak threshold `voice_threshold` has been removed. Passing it to settings, sessions, or
+`has_voice` raises `TypeError` with guidance to set `voice_rms_threshold` in normalized full-scale
+RMS units. Replace the keyword and select an RMS value, such as the default `0.01`; do not copy
+an old peak value unchanged, since peak and RMS have different meanings.
+Settings and session constructors accept only `silence_threshold_s` positionally; all following
+fields require keywords. A second positional argument also raises the migration `TypeError`,
+so an old positional peak threshold cannot be interpreted as RMS silently.
 
 The callback performs recognition on `ClosedUtterance.pcm`. A `FinalObservation.source_offset_s`
 uses seconds from the beginning of the input audio, so convert any recognizer-relative offset

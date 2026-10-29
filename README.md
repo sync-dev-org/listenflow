@@ -261,14 +261,27 @@ for a hook example.
 
 ## Utterance boundaries
 
-- `has_voice` checks whether any sample reaches a normalized full-scale amplitude threshold.
-  The threshold must be a finite `float` between `0.0` and `1.0`; the helper is amplitude-based.
-- `UtteranceBoundarySettings` configures the silence threshold, voice threshold, preroll, and
+- Voice detection uses fixed 256-sample (16 ms) blocks at 16 kHz. A block is voiced when its RMS
+  reaches `voice_rms_threshold`, a normalized full-scale RMS amplitude. s16le samples are divided
+  by 32768; f32le values are used directly. The threshold defaults to `0.01` (about -40 dBFS) and
+  must be a finite `float` greater than `0.0` and at most `1.0`.
+- `has_voice(chunk, *, input_format=..., voice_rms_threshold=...)` returns true when any block in
+  that chunk is voiced. Each call starts its own blocks and measures the final short block using
+  its actual sample count, without zero padding. The session and pipeline retain incomplete blocks
+  across chunks, so empty chunks and different chunk sizes do not change block alignment.
+- `UtteranceBoundarySettings` configures the silence threshold, RMS threshold, preroll, and
   minimum voiced span (`min_voiced_s`, default `0.0`). In AUTO mode, the pipeline skips decoding
   shorter utterances and emits only `UtteranceStart` and `UtteranceEnd`; the start event remains immediate.
+  The voiced span runs from the first voiced block's start to the last voiced block's end.
+  Silence closes an utterance at the first block boundary at or beyond `silence_threshold_s` after
+  the last voiced block: the silence duration is rounded up to blocks. The default `0.8` seconds
+  is exactly 50 blocks. The decoder receives audio through that closing block. An open utterance
+  at end of input closes at the actual input end, without adding silence.
 - `UtteranceBoundarySession` tracks audio offsets and utterance IDs. Feed PCM through
   `observe_pcm()` and recognition results through `observe_provisional()` or `observe_final()`.
   Call `finish_input()` when input ends, then drain `finalize_events()`.
+  A start detected in the final short block is returned there, or before any non-empty recognition
+  observation received first. `maybe_end_event()` waits until that start has been delivered.
 - `UtteranceDecodePipeline` receives PCM while decoding closed utterances in order. Its async
   `decode_utterance` callback receives a `ClosedUtterance` and returns an iterable of
   `ProvisionalObservation` or `FinalObservation` records. `stream()` yields transcript events
@@ -282,6 +295,21 @@ for a hook example.
 
 See the [utterance API](https://sync-dev-org.github.io/listenflow/api/utterances/) for the session and
 pipeline interfaces.
+
+Replace the removed peak-amplitude keyword `voice_threshold` with `voice_rms_threshold` in settings,
+session construction, and `has_voice` calls. Passing `voice_threshold` raises `TypeError` with RMS
+configuration guidance. Choose the new threshold in normalized full-scale RMS units; an old peak
+value such as `0.1` is not an equivalent RMS threshold. For example:
+
+```python
+from listenflow import UtteranceBoundarySettings
+
+settings = UtteranceBoundarySettings(voice_rms_threshold=0.01)
+```
+
+For settings and sessions, only the first argument, `silence_threshold_s`, can be positional.
+All following fields require keywords. A second positional argument raises the same migration
+`TypeError`, preventing an old positional peak threshold from being interpreted as RMS.
 
 ## Offline models
 
