@@ -73,12 +73,27 @@ def validate_voice_threshold(voice_threshold: object) -> float:
 
 @dataclass(frozen=True, slots=True)
 class UtteranceBoundarySettings:
+    """Configure voice detection and complete-utterance decoding.
+
+    ``min_voiced_s`` is the minimum voiced span to decode, in finite, non-negative
+    seconds. It defaults to ``0.0``, which decodes every utterance. The span runs
+    from the start of the first voiced chunk to the end of the last voiced chunk,
+    excluding preroll and trailing silence. Shorter utterances emit only
+    ``UtteranceStart`` and ``UtteranceEnd``, including at end of input; their start
+    event is emitted as soon as the first voiced chunk arrives.
+    """
+
     silence_threshold_s: float = 0.8
     voice_threshold: float = DEFAULT_VOICE_THRESHOLD
     preroll_s: float = 0.3
+    min_voiced_s: float = 0.0
 
     def __post_init__(self) -> None:
-        for name, allow_zero in (("silence_threshold_s", False), ("preroll_s", True)):
+        for name, allow_zero in (
+            ("silence_threshold_s", False),
+            ("preroll_s", True),
+            ("min_voiced_s", True),
+        ):
             value = getattr(self, name)
             range_description = "non-negative" if allow_zero else "positive"
             error_message = f"{name} must be a finite {range_description} number of seconds"
@@ -90,7 +105,7 @@ class UtteranceBoundarySettings:
                 raise ValueError(error_message) from error
             if not math.isfinite(seconds) or (seconds < 0 if allow_zero else seconds <= 0):
                 raise ValueError(error_message)
-            if allow_zero and not math.isfinite(seconds * SAMPLE_RATE_HZ):
+            if name == "preroll_s" and not math.isfinite(seconds * SAMPLE_RATE_HZ):
                 raise ValueError(
                     f"{name} must produce a finite sample count at {SAMPLE_RATE_HZ} Hz"
                 )
@@ -749,13 +764,22 @@ class UtteranceDecodePipeline:
                     return
                 next_emit_utterance_id += 1
 
-        def enqueue_closed(utterance: ClosedUtterance) -> None:
+        def close_current_utterance(pcm: bytes, *, voice_start_s: float) -> None:
+            if session.last_voice_offset_s is None:
+                raise RuntimeError("active utterance has no voiced audio")
+            # Recover whole samples so offset rounding cannot shorten an exact threshold.
+            voiced_samples = round((session.last_voice_offset_s - voice_start_s) * SAMPLE_RATE_HZ)
+            utterance = session._close_current_utterance(pcm)
+            if voiced_samples / SAMPLE_RATE_HZ < self._boundary_settings.min_voiced_s:
+                queue_events(session._finalize_closed_events_for_pipeline(utterance.utterance_id))
+                return
             self._pending_decode_utterances += 1
             decode_queue.put_nowait(utterance)
 
         async def receive_pcm() -> None:
             nonlocal stop_requested
             current_pcm: bytearray | None = None
+            voice_start_s = 0.0
             preroll_pcm = bytearray()
             sample_width = _SAMPLE_WIDTH_BYTES[self._input_format]
             preroll_bytes = round(self._boundary_settings.preroll_s * SAMPLE_RATE_HZ) * sample_width
@@ -769,6 +793,7 @@ class UtteranceDecodePipeline:
                     self._record_progress()
                     self._processed_pcm_chunks += 1
                     if not was_in_utterance and session.in_utterance:
+                        voice_start_s = chunk_start_s
                         start_offset_s = max(
                             0.0,
                             chunk_start_s - len(preroll_pcm) / sample_width / SAMPLE_RATE_HZ,
@@ -788,7 +813,7 @@ class UtteranceDecodePipeline:
                     if session.in_utterance and session.pending_end_ts is not None:
                         if current_pcm is None:
                             raise RuntimeError("active utterance has no PCM buffer")
-                        enqueue_closed(session._close_current_utterance(bytes(current_pcm)))
+                        close_current_utterance(bytes(current_pcm), voice_start_s=voice_start_s)
                         current_pcm = None
 
                 if stop_requested:
@@ -798,7 +823,7 @@ class UtteranceDecodePipeline:
                     if current_pcm is None:
                         raise RuntimeError("active utterance has no PCM buffer")
                     session.pending_end_ts = session.input_offset_s
-                    enqueue_closed(session._close_current_utterance(bytes(current_pcm)))
+                    close_current_utterance(bytes(current_pcm), voice_start_s=voice_start_s)
                 decode_queue.put_nowait(decode_done)
             except BaseException as error:
                 if not stop_requested:

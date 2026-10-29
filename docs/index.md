@@ -173,7 +173,14 @@ recognizer's observations, and call `finish_input()` followed by `finalize_event
 input. This path fits engines that already stream recognition observations.
 
 `UtteranceDecodePipeline` fits engines that decode complete utterances. Configure silence, voice
-threshold, and preroll with `UtteranceBoundarySettings`, and supply an async decoding callback:
+threshold, preroll, and the minimum voiced span with `UtteranceBoundarySettings`, and supply an async
+decoding callback. `min_voiced_s` defaults to `0.0`, which decodes every utterance. A positive value
+skips decoding utterances whose voiced span is shorter than that many seconds, including utterances
+closed at end of input. The span runs from the beginning of the first voiced chunk to the end of the
+last voiced chunk, including any silence between them, and excludes preroll and trailing silence.
+Skipped utterances emit only `UtteranceStart` and `UtteranceEnd`; the start event still arrives as
+soon as the first voiced chunk is received. The example below uses a minimum voiced span of 0.2
+seconds:
 
 ```python
 from collections.abc import Awaitable, Callable, Iterable
@@ -199,6 +206,7 @@ def make_pipeline(
             silence_threshold_s=0.8,
             voice_threshold=500 / 32768,
             preroll_s=0.3,
+            min_voiced_s=0.2,
         ),
         decode_utterance=decode_utterance,
         input_format=EngineInputFormat.PCM_S16LE,

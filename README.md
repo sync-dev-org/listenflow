@@ -226,7 +226,9 @@ recognition, use `UtteranceBoundarySession` to translate PCM and recognition obs
 
 - `has_voice` checks whether any sample reaches a normalized full-scale amplitude threshold.
   The threshold must be a finite `float` between `0.0` and `1.0`; the helper is amplitude-based.
-- `UtteranceBoundarySettings` configures the silence threshold, voice threshold, and preroll.
+- `UtteranceBoundarySettings` configures the silence threshold, voice threshold, preroll, and
+  minimum voiced span (`min_voiced_s`, default `0.0`). The pipeline skips decoding shorter
+  utterances and emits only `UtteranceStart` and `UtteranceEnd`; the start event remains immediate.
 - `UtteranceBoundarySession` tracks audio offsets and utterance IDs. Feed PCM through
   `observe_pcm()` and recognition results through `observe_provisional()` or `observe_final()`.
   Call `finish_input()` when input ends, then drain `finalize_events()`.
